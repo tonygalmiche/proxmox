@@ -368,6 +368,23 @@ EOF
                 mount --bind "/$fs" "$grub_mnt/$fs"
             done
 
+            # Corrige le nom d'interface réseau dans /etc/network/interfaces : OpenNebula
+            # et Proxmox n'attribuent pas le même nom (udev/systemd nomme l'interface
+            # selon le bus PCI virtuel) — sans correction, l'interface ne se lève plus au
+            # boot ("Failed to start Raise network interfaces"). On remplace tout nom
+            # d'interface référencé (hors "lo") par $PROXMOX_NET_IFACE, en conservant la
+            # config IP telle quelle.
+            local ifaces_file="$grub_mnt/etc/network/interfaces"
+            if [ -f "$ifaces_file" ]; then
+                local -a old_ifaces
+                mapfile -t old_ifaces < <(awk '/^(auto|iface|allow-hotplug)[ \t]+/{print $2}' "$ifaces_file" | sort -u | grep -v '^lo$' || true)
+                local old_iface
+                for old_iface in "${old_ifaces[@]}"; do
+                    [ "$old_iface" = "$PROXMOX_NET_IFACE" ] && continue
+                    sed -i "s/\b$old_iface\b/$PROXMOX_NET_IFACE/g" "$ifaces_file"
+                done
+            fi
+
             # Active la console série (ttyS0) dans l'image, pour pouvoir ensuite utiliser
             # `qm terminal <vmid>` (terminal SSH classique, copier/coller normal) plutôt
             # que la console graphique noVNC (qui ne permet pas de coller un mot de passe).

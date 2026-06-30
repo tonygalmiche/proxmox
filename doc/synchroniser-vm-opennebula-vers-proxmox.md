@@ -137,7 +137,7 @@ appariés par ordre d'index — voir [creer-vm-proxmox.sh](creer-vm-proxmox.md))
      ≥ 4), le script s'arrête en erreur sur ce disque.
    - les deux partitions sont montées (source en lecture seule sur OpenNebula, destination
      en local sur Proxmox) et synchronisées avec `rsync -aHAX --delete --numeric-ids`.
-5. **Réinstallation de GRUB et activation de la console série** : si une partition synchronisée contient un `/etc/fstab`
+5. **Réinstallation de GRUB, correction réseau et activation de la console série** : si une partition synchronisée contient un `/etc/fstab`
    (donc la racine du système), le script réinstalle GRUB pour que le disque Proxmox
    soit bootable. Le disque est exposé une seconde fois via `qemu-nbd`
    (`GRUB_NBD_DEVICE`, `/dev/nbd1` par défaut, distinct du `NBD_DEVICE` côté
@@ -171,6 +171,14 @@ appariés par ordre d'index — voir [creer-vm-proxmox.sh](creer-vm-proxmox.md))
    (`/dev/nbd1p1 does not exist` dans l'initramfs). Un échec de `grub-install`/
    `update-grub` n'interrompt pas le script (juste un avertissement) : à vérifier/
    corriger manuellement avant de démarrer la VM.
+
+   Avant de réinstaller GRUB, le nom d'interface réseau référencé dans
+   `/etc/network/interfaces` (hors `lo`) est remplacé par `$PROXMOX_NET_IFACE`
+   (`ens18` par défaut, premier NIC virtio sous Proxmox) : OpenNebula et Proxmox
+   n'attribuent pas le même nom d'interface (ex. `ens3`/`eth0` côté OpenNebula), ce qui
+   empêche sinon l'interface de se lever au boot (`Failed to start Raise network
+   interfaces`). La config IP (adresse, masque, gateway) est conservée telle quelle,
+   seul le nom de l'interface change.
 
    Avant de regénérer `grub.cfg` (`update-grub`), la console série (`ttyS0`) est
    activée dans l'image : ajout de `console=ttyS0,115200n8` à `GRUB_CMDLINE_LINUX_DEFAULT`
