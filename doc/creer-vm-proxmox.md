@@ -3,7 +3,7 @@
 Script de création d'une VM **Proxmox** vide, avec la même configuration (CPU, mémoire,
 disques) que la VM correspondante sur **OpenNebula**. Les disques créés sont **vides**
 (juste à la bonne taille) : les données seront copiées/importées plus tard par
-[migrer-vm-opennebula-vers-proxmox.sh](migrer-vm-opennebula-vers-proxmox.md).
+[synchroniser-vm-opennebula-vers-proxmox.sh](synchroniser-vm-opennebula-vers-proxmox.md).
 
 Le script est lancé **depuis le serveur Proxmox**, qui dispose d'un accès SSH complet
 (avec clé) vers le serveur OpenNebula.
@@ -49,8 +49,9 @@ jamais une VM existante.
 
 ### 2. Récupération de la configuration sur OpenNebula
 
-Comme pour le script de migration, le script recherche la VM sur OpenNebula par nom exact
-ou par préfixe `<nom-vm>-<id>` (`onevm list -x`), puis récupère sa configuration complète
+Comme pour les autres scripts du workflow, le script recherche la VM sur OpenNebula par
+nom exact ou par préfixe `<nom-vm>-<id>` (`onevm list -x`), puis récupère sa configuration
+complète
 (`onevm show <id> -x`) :
 
 - nombre de vCPU (`VCPU`, ou `CPU` arrondi au supérieur si `VCPU` absent)
@@ -79,8 +80,8 @@ qm set <vmid> --scsi<disk_id> <storage>:<taille_Go>,iothread=1
 ```
 
 Le `DISK_ID` OpenNebula est repris tel quel comme index `scsi<N>` Proxmox, pour rester
-cohérent avec ce que recherche [migrer-vm-opennebula-vers-proxmox.sh](migrer-vm-opennebula-vers-proxmox.md)
-(comparaison disque par disque, par ordre d'index).
+cohérent avec ce que recherche [synchroniser-vm-opennebula-vers-proxmox.sh](synchroniser-vm-opennebula-vers-proxmox.md)
+(appariement disque par disque, par ordre d'index).
 
 Le disque `scsi0` est ensuite défini comme disque de boot (`qm set <vmid> --boot order=scsi0`).
 
@@ -92,5 +93,5 @@ Le disque `scsi0` est ensuite défini comme disque de boot (`qm set <vmid> --boo
   généralement des multiples de 1024 Mo, donc sans incidence en pratique).
 - Le bridge réseau est à fournir explicitement si ce n'est pas `interne` (utiliser la commande
   `qm config <vmid> | grep net` sur une VM Proxmox existante pour le retrouver).
-- La VM n'est pas démarrée par ce script : c'est `migrer-vm-opennebula-vers-proxmox.sh` qui
-  s'en charge une fois les disques migrés (étape 8).
+- La VM n'est pas démarrée par ce script : démarrage manuel (`qm start <vmid>`) une fois
+  les disques synchronisés par `synchroniser-vm-opennebula-vers-proxmox.sh`.

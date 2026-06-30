@@ -502,7 +502,7 @@ mapfile -t PROXMOX_DISK_LINES < <(
 
 if [ "${#PROXMOX_DISK_LINES[@]}" -ne "${#ON_DISKS[@]}" ]; then
     echo "Erreur : nombre de disques différent entre OpenNebula (${#ON_DISKS[@]}) et Proxmox (${#PROXMOX_DISK_LINES[@]})." >&2
-    echo "         Vérifiez avec migrer-vm-opennebula-vers-proxmox.sh avant de synchroniser." >&2
+    echo "         Vérifiez la configuration créée par creer-vm-proxmox.sh avant de synchroniser." >&2
     exit 1
 fi
 

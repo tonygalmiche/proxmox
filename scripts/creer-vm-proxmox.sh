@@ -4,7 +4,7 @@ set -euo pipefail
 # Création d'une VM Proxmox vide (CPU/RAM/disques) avec la même configuration
 # que la VM correspondante sur OpenNebula. Les disques sont créés vides, à la
 # bonne taille : les données seront copiées/importées plus tard par
-# migrer-vm-opennebula-vers-proxmox.sh.
+# synchroniser-vm-opennebula-vers-proxmox.sh.
 # Voir creer-vm-proxmox.md pour le détail du fonctionnement.
 #
 # Usage: ./creer-vm-proxmox.sh <nom-vm> [bridge-reseau]

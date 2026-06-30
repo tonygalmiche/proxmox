@@ -3,9 +3,10 @@
 Script de synchronisation des **données** des disques d'une VM, depuis **OpenNebula**
 vers les disques (déjà créés, vides) de la même VM sur **Proxmox**.
 
-C'est l'implémentation de l'étape 5 décrite dans
-[migrer-vm-opennebula-vers-proxmox.md](migrer-vm-opennebula-vers-proxmox.md), avec une
-approche différente du `rsync` de l'image disque brute initialement envisagé :
+Le script localise et vérifie lui-même la VM des deux côtés (état OpenNebula, état
+Proxmox, concordance du nombre/de la taille des disques) avant toute synchronisation :
+voir [Pré-requis](#pré-requis) et l'étape 3 ci-dessous. L'approche retenue (montage +
+`rsync` au niveau fichier) évite de copier l'image disque brute complète :
 
 - pas besoin d'espace disque supplémentaire sur Proxmox pour stocker une copie de l'image
   OpenNebula (problème bloquant initial) ;
@@ -83,8 +84,8 @@ Synchronisation terminée pour la VM 'vm-dokuwiki-bullseye' (Proxmox VMID=104) -
 
 ## Détail du fonctionnement, par disque
 
-Pour chaque disque (`DISK_ID` OpenNebula ↔ volume Proxmox correspondant, par ordre d'index,
-même appariement que [migrer-vm-opennebula-vers-proxmox.sh](migrer-vm-opennebula-vers-proxmox.md)) :
+Pour chaque disque (`DISK_ID` OpenNebula ↔ volume Proxmox `scsi<DISK_ID>` correspondant,
+appariés par ordre d'index — voir [creer-vm-proxmox.sh](creer-vm-proxmox.md)) :
 
 1. **Connexion NBD côté OpenNebula** : tout montage résiduel d'un run précédent (sous
    `SRC_MOUNT_BASE`) est d'abord démonté — sinon `kpartx -d`/`qemu-nbd --disconnect`
@@ -183,11 +184,11 @@ même appariement que [migrer-vm-opennebula-vers-proxmox.sh](migrer-vm-opennebul
 - **Un seul disque NBD à la fois** : les disques d'une même VM sont synchronisés
   séquentiellement (un seul `/dev/nbd0` réutilisé), donc pas de parallélisation.
 - **`--init` écrase les disques Proxmox** : à ne lancer qu'une fois les disques vides
-  effectivement créés et vérifiés (voir [creer-vm-proxmox.sh](creer-vm-proxmox.md) et
-  [migrer-vm-opennebula-vers-proxmox.sh](migrer-vm-opennebula-vers-proxmox.md)), et une
-  seule fois par VM (les passages suivants doivent être faits sans `--init`).
-- **VM doit rester arrêtée sur OpenNebula** pendant toute la phase de synchronisation
-  (y compris les resynchronisations) : monter l'image d'une VM en cours d'exécution n'est
-  pas sûr.
-- Ce script ne démarre pas la VM sur Proxmox : il s'agit toujours de l'étape 8 (à
-  implémenter), une fois la dernière synchronisation effectuée juste avant la bascule.
+  effectivement créés (voir [creer-vm-proxmox.sh](creer-vm-proxmox.md)), et une seule fois
+  par VM (les passages suivants doivent être faits sans `--init`).
+- **VM doit rester arrêtée sur OpenNebula et sur Proxmox** pendant toute la phase de
+  synchronisation (y compris les resynchronisations), vérifié par le script : monter
+  l'image ou écrire sur le disque d'une VM en cours d'exécution n'est pas sûr (et corrompt
+  le filesystem, vécu en pratique).
+- Ce script ne démarre pas la VM sur Proxmox : démarrage manuel (`qm start <vmid>`) une
+  fois la dernière synchronisation effectuée juste avant la bascule.
