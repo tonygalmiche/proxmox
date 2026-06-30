@@ -31,7 +31,7 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
-for cmd in qm pvesm qemu-nbd partprobe chroot mknod; do
+for cmd in qm pvesm qemu-nbd partprobe chroot mknod blkid; do
     command -v "$cmd" >/dev/null 2>&1 || { echo "Erreur : commande '$cmd' manquante." >&2; exit 1; }
 done
 
@@ -117,15 +117,27 @@ for fs in proc sys; do
     mount --bind "/$fs" "$MNT/$fs"
 done
 
-chroot "$MNT" /bin/bash -c '
+ROOT_FSUUID=$(blkid -o value -s UUID "$ROOT_DEV")
+
+# update-grub tourne avec la racine montée depuis $ROOT_DEV (device NBD temporaire côté
+# hôte, pas le device final de la VM) : sans correction, il embarque ce chemin temporaire
+# en dur dans grub.cfg (root=/dev/nbdXpY) au lieu d'un UUID portable, et la VM ne démarre
+# plus ("does not exist" dans l'initramfs). Voir synchroniser-vm-opennebula-vers-proxmox.sh
+# pour le même correctif.
+chroot "$MNT" /bin/bash -s -- "$ROOT_DEV" "$ROOT_FSUUID" <<'EOF'
 set -e
+ROOT_DEV="$1"
+ROOT_FSUUID="$2"
 if ! grep -q "console=ttyS0" /etc/default/grub; then
     sed -i "s/^GRUB_CMDLINE_LINUX_DEFAULT=\"\(.*\)\"/GRUB_CMDLINE_LINUX_DEFAULT=\"\1 console=tty0 console=ttyS0,115200n8\"/" /etc/default/grub
 fi
 update-grub
+if [ -n "$ROOT_FSUUID" ] && [ -f /boot/grub/grub.cfg ]; then
+    sed -i "s#root=$ROOT_DEV#root=UUID=$ROOT_FSUUID#g" /boot/grub/grub.cfg
+fi
 mkdir -p /etc/systemd/system/getty.target.wants
 ln -sf /lib/systemd/system/serial-getty@.service /etc/systemd/system/getty.target.wants/serial-getty@ttyS0.service
-'
+EOF
 
 echo "Console série activée dans l'image (GRUB + getty) pour '$VM_NAME' (VMID=$PROXMOX_VMID)."
 
