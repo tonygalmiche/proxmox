@@ -67,7 +67,7 @@ correspondance n'est faite avec l'ID OpenNebula, les deux identifiants sont ind�
 
 ```bash
 qm create <vmid> --name <nom-vm> --memory <mo> --cores <vcpu> --cpu host \
-    --ostype l26 --scsihw virtio-scsi-pci --net0 virtio,bridge=<bridge>,firewall=1
+    --ostype l26 --scsihw virtio-scsi-single --net0 virtio,bridge=<bridge>,firewall=1
 ```
 
 ### 5. Création des disques vides
@@ -78,6 +78,11 @@ correspondante (arrondie au Go supérieur) est ajouté sur `scsi<DISK_ID>` :
 ```bash
 qm set <vmid> --scsi<disk_id> <storage>:<taille_Go>,iothread=1
 ```
+
+`iothread=1` n'est utilisable qu'avec le contrôleur `virtio-scsi-single` (un contrôleur
+dédié par disque) — d'où ce choix à l'étape 4 plutôt que `virtio-scsi-pci` (un seul
+contrôleur partagé, qui ignore silencieusement `iothread` avec un avertissement au
+démarrage).
 
 Le `DISK_ID` OpenNebula est repris tel quel comme index `scsi<N>` Proxmox, pour rester
 cohérent avec ce que recherche [synchroniser-vm-opennebula-vers-proxmox.sh](synchroniser-vm-opennebula-vers-proxmox.md)

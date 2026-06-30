@@ -127,7 +127,7 @@ qm create "$PROXMOX_VMID" \
     --cores "$ON_VCPU" \
     --cpu host \
     --ostype l26 \
-    --scsihw virtio-scsi-pci \
+    --scsihw virtio-scsi-single \
     --net0 "virtio,bridge=$PROXMOX_BRIDGE,firewall=1" \
     >/dev/null
 
