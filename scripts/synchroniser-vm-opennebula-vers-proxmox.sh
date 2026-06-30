@@ -503,6 +503,7 @@ PROXMOX_STATUS=$(qm status "$PROXMOX_VMID" | awk '{print $2}')
 if [ "$PROXMOX_STATUS" != "stopped" ]; then
     echo "Erreur : la VM Proxmox '$VM_NAME' (VMID=$PROXMOX_VMID) n'est pas arrêtée (état=$PROXMOX_STATUS)." >&2
     echo "         Monter/écrire sur son disque pendant qu'elle tourne le corromprait (vécu en pratique)." >&2
+    echo "         Arrêtez-la d'abord : qm shutdown $PROXMOX_VMID" >&2
     exit 1
 fi
 
