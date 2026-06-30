@@ -137,7 +137,7 @@ appariés par ordre d'index — voir [creer-vm-proxmox.sh](creer-vm-proxmox.md))
      ≥ 4), le script s'arrête en erreur sur ce disque.
    - les deux partitions sont montées (source en lecture seule sur OpenNebula, destination
      en local sur Proxmox) et synchronisées avec `rsync -aHAX --delete --numeric-ids`.
-5. **Réinstallation de GRUB** : si une partition synchronisée contient un `/etc/fstab`
+5. **Réinstallation de GRUB et activation de la console série** : si une partition synchronisée contient un `/etc/fstab`
    (donc la racine du système), le script réinstalle GRUB pour que le disque Proxmox
    soit bootable. Le disque est exposé une seconde fois via `qemu-nbd`
    (`GRUB_NBD_DEVICE`, `/dev/nbd1` par défaut, distinct du `NBD_DEVICE` côté
@@ -171,6 +171,17 @@ appariés par ordre d'index — voir [creer-vm-proxmox.sh](creer-vm-proxmox.md))
    (`/dev/nbd1p1 does not exist` dans l'initramfs). Un échec de `grub-install`/
    `update-grub` n'interrompt pas le script (juste un avertissement) : à vérifier/
    corriger manuellement avant de démarrer la VM.
+
+   Avant de regénérer `grub.cfg` (`update-grub`), la console série (`ttyS0`) est
+   activée dans l'image : ajout de `console=ttyS0,115200n8` à `GRUB_CMDLINE_LINUX_DEFAULT`
+   (`/etc/default/grub`) et activation d'un `getty` dessus
+   (`serial-getty@ttyS0.service`). Les images OpenNebula n'ont généralement pas ça par
+   défaut. Côté Proxmox, `qm set <vmid> --serial0 socket` est appliqué juste après. Une
+   fois la VM démarrée, `qm terminal <vmid>` donne alors un terminal SSH classique
+   (copier/coller normal du mot de passe), à utiliser de préférence à la console
+   graphique noVNC — **fermer l'onglet noVNC avant** d'utiliser `qm terminal`, sinon les
+   deux consoles se disputent l'accès au port série (voir
+   [commandes-proxmox.md](commandes-proxmox.md)).
 6. **Nettoyage** : démontage des deux côtés, suppression des mappings `kpartx`,
    déconnexion des NBD côté OpenNebula et côté Proxmox (GRUB).
 

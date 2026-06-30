@@ -49,7 +49,7 @@ if [ "$INIT" = "yes" ]; then
     fi
 fi
 
-for cmd in python3 pvesm qemu-img qemu-nbd sfdisk partprobe kpartx blkid blockdev rsync chroot mknod tune2fs e2fsck; do
+for cmd in python3 pvesm qm qemu-img qemu-nbd sfdisk partprobe kpartx blkid blockdev rsync chroot mknod tune2fs e2fsck; do
     command -v "$cmd" >/dev/null 2>&1 || { echo "Erreur : commande '$cmd' manquante sur Proxmox." >&2; exit 1; }
 done
 
@@ -368,6 +368,17 @@ EOF
                 mount --bind "/$fs" "$grub_mnt/$fs"
             done
 
+            # Active la console série (ttyS0) dans l'image, pour pouvoir ensuite utiliser
+            # `qm terminal <vmid>` (terminal SSH classique, copier/coller normal) plutôt
+            # que la console graphique noVNC (qui ne permet pas de coller un mot de passe).
+            # Les images OpenNebula n'ont généralement pas ça par défaut.
+            if ! grep -q "console=ttyS0" "$grub_mnt/etc/default/grub" 2>/dev/null; then
+                sed -i 's/^GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"/GRUB_CMDLINE_LINUX_DEFAULT="\1 console=tty0 console=ttyS0,115200n8"/' "$grub_mnt/etc/default/grub"
+            fi
+            mkdir -p "$grub_mnt/etc/systemd/system/getty.target.wants"
+            ln -sf /lib/systemd/system/serial-getty@.service \
+                "$grub_mnt/etc/systemd/system/getty.target.wants/serial-getty@ttyS0.service"
+
             local grub_log
             grub_log=$(mktemp)
             if ! chroot "$grub_mnt" grub-install --target=i386-pc "$GRUB_NBD_DEVICE" >"$grub_log" 2>&1; then
@@ -401,6 +412,8 @@ EOF
             umount "$grub_mnt"
             umount "$grub_mnt"
             qemu-nbd --disconnect "$GRUB_NBD_DEVICE" >/dev/null 2>&1 || true
+
+            qm set "$PROXMOX_VMID" --serial0 socket >/dev/null 2>&1 || true
         fi
     fi
 
