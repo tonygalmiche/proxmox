@@ -121,10 +121,18 @@ sync_disk() {
     #    et expose ses partitions via kpartx (plus fiable que le scan natif du noyau,
     #    qui rate les partitions logiques dans une partition étendue), ou le device
     #    entier s'il n'y a pas de table de partitions.
-    local -a src_parts
+    # Le heredoc SSH émet deux sections séparées par un marqueur :
+    # 1. le dump sfdisk (entre __SFDISK_START__ et __SFDISK_END__) — capturé ici
+    #    pour pouvoir être rejoué côté Proxmox sans ouvrir une 2ème connexion SSH
+    #    (nbd0 se déconnecte quand la session SSH se ferme ; un 2ème appel SSH échoue
+    #    avec I/O error sur /dev/nbd0) ;
+    # 2. la liste des partitions source (/dev/mapper/nbd0pN ou /dev/nbd0).
+    local -a src_parts=()
+    local sfdisk_src_dump=""
     local ssh_err
     ssh_err=$(mktemp)
-    mapfile -t src_parts < <(ssh "$OPENNEBULA_HOST" bash -s -- "$on_source" "$NBD_DEVICE" "$SRC_MOUNT_BASE" 2>"$ssh_err" <<'EOF'
+    local -a _heredoc_out
+    mapfile -t _heredoc_out < <(ssh "$OPENNEBULA_HOST" bash -s -- "$on_source" "$NBD_DEVICE" "$SRC_MOUNT_BASE" 2>"$ssh_err" <<'EOF'
 set -euo pipefail
 SRC="$1"
 NBD="$2"
@@ -140,6 +148,9 @@ qemu-nbd --disconnect "$NBD" >/dev/null 2>&1 || true
 FORMAT=$(qemu-img info "$SRC" | awk -F': ' '/^file format/{print $2}')
 qemu-nbd --read-only --format="$FORMAT" --connect="$NBD" "$SRC"
 sleep 1
+echo "__SFDISK_START__"
+sfdisk -d "$NBD" 2>/dev/null || true
+echo "__SFDISK_END__"
 MAPS=$(kpartx -avs "$NBD" 2>/dev/null | awk '{print $3}')
 if [ -n "$MAPS" ]; then
     for m in $MAPS; do echo "/dev/mapper/$m"; done
@@ -148,6 +159,14 @@ else
 fi
 EOF
 )
+    local _in_sfdisk=0 _line
+    for _line in "${_heredoc_out[@]}"; do
+        if   [ "$_line" = "__SFDISK_START__" ]; then _in_sfdisk=1
+        elif [ "$_line" = "__SFDISK_END__"   ]; then _in_sfdisk=0
+        elif [ "$_in_sfdisk" = "1" ]; then sfdisk_src_dump+="$_line"$'\n'
+        else src_parts+=("$_line")
+        fi
+    done
 
     if [ "${#src_parts[@]}" -eq 0 ]; then
         echo "Erreur : impossible de connecter/lire $on_source sur $OPENNEBULA_HOST." >&2
@@ -162,15 +181,17 @@ EOF
     if [ "$INIT" = "yes" ]; then
         echo "  Copie de la table de partitions ($on_source -> $pve_dev)"
         kpartx -d "$pve_dev" >/dev/null 2>&1 || true
-        local sfdisk_out
-        sfdisk_out=$(mktemp)
-        if ! ssh "$OPENNEBULA_HOST" "sfdisk -d $NBD_DEVICE" 2>"$sfdisk_out" | sfdisk "$pve_dev" >>"$sfdisk_out" 2>&1; then
-            echo "Erreur : impossible de copier la table de partitions sur $pve_dev." >&2
-            cat "$sfdisk_out" >&2
-            rm -f "$sfdisk_out"
-            return 1
+        if [ -n "$sfdisk_src_dump" ]; then
+            local sfdisk_err
+            sfdisk_err=$(mktemp)
+            if ! printf '%s' "$sfdisk_src_dump" | sfdisk "$pve_dev" >"$sfdisk_err" 2>&1; then
+                echo "Erreur : impossible de copier la table de partitions sur $pve_dev." >&2
+                cat "$sfdisk_err" >&2
+                rm -f "$sfdisk_err"
+                return 1
+            fi
+            rm -f "$sfdisk_err"
         fi
-        rm -f "$sfdisk_out"
         partprobe "$pve_dev" 2>/dev/null || true
         sleep 1
     fi
