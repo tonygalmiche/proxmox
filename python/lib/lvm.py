@@ -26,12 +26,21 @@ def get_remote_vg(host: str, partition: str) -> Optional[str]:
 
 
 def remote_activate(host: str, partition: str, vg: str) -> None:
+    # --devices force LVM à n'utiliser que le chemin dm (évite le conflit
+    # /dev/nbd2p4 vs /dev/mapper/nbd2p4 qui sont le même PV pour LVM)
     r = ssh(host,
-            f"pvscan --cache '{partition}' 2>/dev/null; vgchange -ay '{vg}'",
+            f"pvscan --cache '{partition}' 2>/dev/null; "
+            f"vgchange -ay --devices '{partition}' '{vg}'",
             capture=True, check=False)
     if r.returncode != 0:
         raise RuntimeError(
             f"Impossible d'activer le VG '{vg}' sur {host}:\n{r.stdout}\n{r.stderr}"
+        )
+    active = sum(1 for line in r.stdout.splitlines()
+                 if "logical volume(s) in volume group" in line and not line.strip().startswith("0 "))
+    if active == 0:
+        raise RuntimeError(
+            f"VG '{vg}' activé mais aucun LV actif sur {host}:\n{r.stdout}"
         )
 
 
