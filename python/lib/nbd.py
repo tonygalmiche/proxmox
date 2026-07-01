@@ -84,6 +84,9 @@ def remote_connect(host: str, source: str, nbd_device: str,
     """Retourne (sfdisk_dump, liste_partitions)."""
     r = ssh_script(host, _CONNECT_SCRIPT, source, nbd_device, mount_base, capture=True)
 
+    import sys
+    print(f"DEBUG stdout brut:\n{r.stdout!r}", file=sys.stderr)
+
     sfdisk_lines: List[str] = []
     partitions: List[str] = []
     in_sfdisk = False
