@@ -122,7 +122,9 @@ sync_disk() {
     #    qui rate les partitions logiques dans une partition étendue), ou le device
     #    entier s'il n'y a pas de table de partitions.
     local -a src_parts
-    mapfile -t src_parts < <(ssh "$OPENNEBULA_HOST" bash -s -- "$on_source" "$NBD_DEVICE" "$SRC_MOUNT_BASE" <<'EOF'
+    local ssh_err
+    ssh_err=$(mktemp)
+    mapfile -t src_parts < <(ssh "$OPENNEBULA_HOST" bash -s -- "$on_source" "$NBD_DEVICE" "$SRC_MOUNT_BASE" 2>"$ssh_err" <<'EOF'
 set -euo pipefail
 SRC="$1"
 NBD="$2"
@@ -149,8 +151,11 @@ EOF
 
     if [ "${#src_parts[@]}" -eq 0 ]; then
         echo "Erreur : impossible de connecter/lire $on_source sur $OPENNEBULA_HOST." >&2
+        [ -s "$ssh_err" ] && cat "$ssh_err" >&2
+        rm -f "$ssh_err"
         return 1
     fi
+    rm -f "$ssh_err"
 
     # 2. Côté Proxmox : recopie la table de partitions (uniquement avec --init), puis expose
     #    les partitions du volume LVM via kpartx.
