@@ -62,11 +62,36 @@ def get_remote_lvs(host: str, vg: str) -> List[LvInfo]:
     return lvs
 
 
-def init_vg(vg: str, partition: str) -> None:
-    """Nettoie tout résidu LVM sur partition, puis recrée PV + VG proprement."""
+def remote_get_vg_backup(host: str, vg: str) -> str:
+    """Retourne le contenu du backup vgcfgbackup du VG source (préserve VG+LV UUIDs)."""
+    r = ssh(host,
+            f"vgcfgbackup -f /tmp/_vgcfg_{vg} '{vg}' 2>/dev/null "
+            f"&& cat /tmp/_vgcfg_{vg} && rm -f /tmp/_vgcfg_{vg}",
+            capture=True, check=False)
+    return r.stdout
+
+
+def _parse_pv_uuid(backup: str) -> Optional[str]:
+    m = re.search(
+        r'physical_volumes\s*\{.*?id\s*=\s*"'
+        r'([A-Za-z0-9]{6}-[A-Za-z0-9]{4}-[A-Za-z0-9]{4}-[A-Za-z0-9]{4}'
+        r'-[A-Za-z0-9]{4}-[A-Za-z0-9]{4}-[A-Za-z0-9]{6})"',
+        backup, re.DOTALL,
+    )
+    return m.group(1) if m else None
+
+
+def init_vg(vg: str, partition: str, vg_backup: Optional[str] = None) -> bool:
+    """Nettoie tout résidu LVM sur partition, puis recrée le VG.
+
+    Si vg_backup (contenu de vgcfgbackup) est fourni, utilise pvcreate --restorefile
+    + vgcfgrestore pour préserver VG UUID, LV UUIDs et les paths dm-uuid dans fstab/grub.
+
+    Retourne True si la structure LV a été restaurée (pas besoin de lvcreate),
+    False si le VG a été recréé vide (lvcreate nécessaire).
+    """
     run(["vgchange", "-an", vg], check=False)
 
-    # Supprime les device-mapper du VG (udev peut les avoir auto-activés)
     dm_prefix = vg.replace("-", "--")
     r = run(["dmsetup", "ls", "--noheadings"], capture=True, check=False)
     for line in r.stdout.splitlines():
@@ -78,13 +103,37 @@ def init_vg(vg: str, partition: str) -> None:
     run(["wipefs", "-a", partition], check=False)
     run(["pvscan", "--cache", partition], check=False)
 
+    if vg_backup:
+        import tempfile, os as _os
+        with tempfile.NamedTemporaryFile("w", suffix=".bak", delete=False) as tmp:
+            tmp.write(vg_backup)
+            backup_file = tmp.name
+        try:
+            pv_uuid = _parse_pv_uuid(vg_backup)
+            pvcreate_cmd = ["pvcreate", "-ff", "-y"]
+            if pv_uuid:
+                pvcreate_cmd += ["--uuid", pv_uuid, "--restorefile", backup_file]
+            pvcreate_cmd.append(partition)
+            r = run(pvcreate_cmd, capture=True, check=False)
+            if r.returncode != 0:
+                raise RuntimeError(f"pvcreate échoué sur {partition}:\n{r.stderr}")
+
+            r = run(["vgcfgrestore", "-f", backup_file, vg], capture=True, check=False)
+            if r.returncode == 0:
+                return True
+            print(f"  Attention : vgcfgrestore échoué, recréation sans préservation UUID:\n{r.stderr}",
+                  file=__import__("sys").stderr)
+        finally:
+            _os.unlink(backup_file)
+
+    # Fallback : vgcreate standard
     r = run(["pvcreate", "-ff", "-y", partition], capture=True, check=False)
     if r.returncode != 0:
         raise RuntimeError(f"pvcreate échoué sur {partition}:\n{r.stderr}")
-
     r = run(["vgcreate", vg, partition], capture=True, check=False)
     if r.returncode != 0:
         raise RuntimeError(f"vgcreate {vg} {partition} échoué:\n{r.stderr}")
+    return False
 
 
 def create_lv(vg: str, name: str, size_bytes: int) -> None:

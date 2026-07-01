@@ -263,9 +263,11 @@ def _handle_lvm(disk_id: int, part_idx: int, src_part: str, dst_part: str,
     lvs = lvm.get_remote_lvs(host, vg)
 
     if init:
-        lvm.init_vg(vg, dst_part)
-        for lv in lvs:
-            lvm.create_lv(vg, lv.name, lv.size_bytes)
+        vg_backup = lvm.remote_get_vg_backup(host, vg)
+        lv_restored = lvm.init_vg(vg, dst_part, vg_backup=vg_backup or None)
+        if not lv_restored:
+            for lv in lvs:
+                lvm.create_lv(vg, lv.name, lv.size_bytes)
 
     lvm.activate(vg)
     cleanup.lvm_vg = vg
