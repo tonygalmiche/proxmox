@@ -56,7 +56,7 @@ sleep 2
 vgchange -an 2>/dev/null || true
 
 echo "__SFDISK_START__"
-sfdisk -d "$NBD" 2>/dev/null || true
+sfdisk -d "$NBD" 2>&1 || true
 echo "__SFDISK_END__"
 
 NBD_BASE=$(basename "$NBD")
@@ -85,7 +85,8 @@ def remote_connect(host: str, source: str, nbd_device: str,
     r = ssh_script(host, _CONNECT_SCRIPT, source, nbd_device, mount_base, capture=True)
 
     import sys
-    print(f"DEBUG stdout brut:\n{r.stdout!r}", file=sys.stderr)
+    print(f"DEBUG stdout:\n{r.stdout!r}", file=sys.stderr)
+    print(f"DEBUG stderr:\n{r.stderr!r}", file=sys.stderr)
 
     sfdisk_lines: List[str] = []
     partitions: List[str] = []
