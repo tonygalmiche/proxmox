@@ -53,7 +53,7 @@ echo "__SFDISK_START__"
 sfdisk -d "$NBD" 2>/dev/null || true
 echo "__SFDISK_END__"
 
-MAPS=$(kpartx -avs "$NBD" 2>/dev/null | awk '{print $3}')
+MAPS=$(kpartx -avs "$NBD" 2>/dev/null | awk '{print $3}') || MAPS=""
 if [ -n "$MAPS" ]; then
     for m in $MAPS; do echo "/dev/mapper/$m"; done
 else
