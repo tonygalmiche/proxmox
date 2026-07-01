@@ -26,10 +26,9 @@ def get_remote_vg(host: str, partition: str) -> Optional[str]:
 
 
 def remote_activate(host: str, partition: str, vg: str) -> None:
-    # --devices restreint LVM au device kernel exact (évite les conflits de doublon PV)
     r = ssh(host,
             f"pvscan --cache '{partition}' 2>/dev/null; "
-            f"vgchange -ay --devices '{partition}' '{vg}'",
+            f"vgchange -ay '{vg}'",
             capture=True, check=False)
     if r.returncode != 0:
         raise RuntimeError(
