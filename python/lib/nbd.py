@@ -33,29 +33,46 @@ SRC="$1" NBD="$2" BASE="$3"
 
 modprobe nbd max_part=16 2>/dev/null || true
 
-# Démontage des résidus + nettoyage de tous les NBD stales.
-# Nécessaire pour éviter les PV UUID en double (même image montée sur un
-# NBD différent lors d'un run précédent), qui font échouer vgchange -ay.
+# Démontage des résidus sur notre point de montage.
 for m in $(mount | awk -v b="$BASE" 'index($3,b)==1{print $3}'); do
     umount "$m" 2>/dev/null || true
 done
+
+# Déconnecte notre NBD EN PREMIER, avant vgchange.
+# vgchange -an envoie des FLUSH sur les PV LVM (ex: nbd2p4) ce qui corrompt
+# l'état kernel du device NBD → sfdisk retourne I/O error même après reconnexion.
+qemu-nbd --disconnect "$NBD" >/dev/null 2>&1 || true
+# Supprime les entrées partition kernel stales (nbd2p*) laissées par le run précédent.
+partx -d "$NBD" 2>/dev/null || true
+sleep 1
+
+# Nettoyage global APRÈS déconnexion : plus de risque I/O sur notre NBD.
 vgchange -an 2>/dev/null || true
 for n in /dev/nbd0 /dev/nbd1 /dev/nbd2 /dev/nbd3 /dev/nbd4 /dev/nbd5; do
-    [ -b "$n" ] && kpartx -d "$n" >/dev/null 2>&1 || true
+    [ "$n" != "$NBD" ] && [ -b "$n" ] && kpartx -d "$n" >/dev/null 2>&1 || true
 done
-qemu-nbd --disconnect "$NBD" >/dev/null 2>&1 || true
-# Supprime les entrées partition stales du kernel (nbd2p*).
-# qemu-nbd --disconnect ne les supprime pas → sfdisk échoue avec I/O error
-# lors de la reconnexion suivante si les partitions étaient montées/LVM.
-partx -d "$NBD" 2>/dev/null || true
 sleep 1
 
 FORMAT=$(qemu-img info "$SRC" | awk -F': ' '/^file format/{print $2}')
 qemu-nbd --read-only --format="$FORMAT" --connect="$NBD" "$SRC"
-sleep 3
 
-# sfdisk AVANT vgchange : vgchange envoie des FLUSH qui rendent le NBD
-# read-only inaccessible en lecture (I/O error).
+# qemu-nbd --connect est un daemon : fork + exit 0 immédiatement.
+# La connexion peut échouer silencieusement si le kernel NBD n'a pas libéré le device.
+# On vérifie que la taille du device est non nulle (>0 = connecté).
+CONNECTED=0
+for i in 1 2 3 4 5 6; do
+    sleep 1
+    SIZE=$(blockdev --getsize64 "$NBD" 2>/dev/null || echo 0)
+    if [ "$SIZE" -gt 0 ]; then
+        CONNECTED=1
+        break
+    fi
+done
+if [ "$CONNECTED" -eq 0 ]; then
+    echo "ERREUR: qemu-nbd n'a pas connecté $NBD après 6s (device size=0)" >&2
+    exit 1
+fi
+
 echo "__SFDISK_START__"
 sfdisk -d "$NBD" 2>/dev/null || true
 echo "__SFDISK_END__"
