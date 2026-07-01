@@ -73,6 +73,7 @@ normalize_partition_table() {
 declare -a DST_MOUNTS_TO_CLEANUP=()
 CURRENT_PVE_DEV=""
 CURRENT_GRUB_MNT=""
+CURRENT_LVM_VG=""
 
 cleanup() {
     local m
@@ -96,6 +97,10 @@ cleanup() {
         [ -n "$m" ] && mountpoint -q "$m" 2>/dev/null && umount "$m" 2>/dev/null || true
     done
     [ -n "$CURRENT_PVE_DEV" ] && kpartx -d "$CURRENT_PVE_DEV" >/dev/null 2>&1 || true
+    if [ -n "$CURRENT_LVM_VG" ]; then
+        vgchange -an "$CURRENT_LVM_VG" >/dev/null 2>&1 || true
+        CURRENT_LVM_VG=""
+    fi
     qemu-nbd --disconnect "$GRUB_NBD_DEVICE" >/dev/null 2>&1 || true
     ssh "$OPENNEBULA_HOST" bash -s -- "$NBD_DEVICE" "$SRC_MOUNT_BASE" <<'EOF' >/dev/null 2>&1 || true
 NBD="$1"
@@ -103,11 +108,35 @@ BASE="$2"
 for m in $(mount | awk -v base="$BASE" 'index($3, base) == 1 {print $3}'); do
     umount "$m" 2>/dev/null || true
 done
+vgchange -an 2>/dev/null || true
 kpartx -d "$NBD" >/dev/null 2>&1 || true
 qemu-nbd --disconnect "$NBD" >/dev/null 2>&1 || true
 EOF
 }
 trap cleanup EXIT
+
+# Applique les corrections post-migration dans la racine montée (réseau + console série).
+# Appelé soit inline (UEFI/LVM, root encore monté via kpartx), soit dans le chroot GRUB (BIOS).
+_apply_root_fixes() {
+    local root_mnt="$1"
+    local ifaces_file="$root_mnt/etc/network/interfaces"
+    if [ -f "$ifaces_file" ]; then
+        local -a old_ifaces
+        mapfile -t old_ifaces < <(awk '/^(auto|iface|allow-hotplug)[ \t]+/{print $2}' "$ifaces_file" | sort -u | grep -v '^lo$' || true)
+        local old_iface
+        for old_iface in "${old_ifaces[@]}"; do
+            [ "$old_iface" = "$PROXMOX_NET_IFACE" ] && continue
+            sed -i "s/\b${old_iface}\b/$PROXMOX_NET_IFACE/g" "$ifaces_file"
+        done
+    fi
+    if [ -f "$root_mnt/etc/default/grub" ] && ! grep -q "console=ttyS0" "$root_mnt/etc/default/grub" 2>/dev/null; then
+        sed -i 's/^GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"/GRUB_CMDLINE_LINUX_DEFAULT="\1 console=tty0 console=ttyS0,115200n8"/' \
+            "$root_mnt/etc/default/grub"
+    fi
+    mkdir -p "$root_mnt/etc/systemd/system/getty.target.wants"
+    ln -sf /lib/systemd/system/serial-getty@.service \
+        "$root_mnt/etc/systemd/system/getty.target.wants/serial-getty@ttyS0.service" 2>/dev/null || true
+}
 
 # Synchronise un disque (un couple source OpenNebula / volume Proxmox).
 sync_disk() {
@@ -255,6 +284,7 @@ EOF
     mkdir -p "$SRC_MOUNT_BASE" "$DST_MOUNT_BASE"
 
     local root_dst_mount="" root_part_num="" root_fsuuid=""
+    local grub_has_esp=no esp_part_num=""
     local idx
     for idx in "${!src_parts[@]}"; do
         local src_part="${src_parts[$idx]}"
@@ -263,6 +293,115 @@ EOF
         local fstype fsuuid
         fstype=$(ssh "$OPENNEBULA_HOST" "blkid -o value -s TYPE '$src_part'" 2>/dev/null || true)
         fsuuid=$(ssh "$OPENNEBULA_HOST" "blkid -o value -s UUID '$src_part'" 2>/dev/null || true)
+
+        # Détecte la partition EFI (ESP) pour la configuration UEFI de la VM Proxmox.
+        if [ "$fstype" = "vfat" ]; then
+            local _esp_lbl
+            _esp_lbl=$(ssh "$OPENNEBULA_HOST" "blkid -o value -s LABEL '$src_part'" 2>/dev/null || true)
+            if [ "$_esp_lbl" = "ESP" ]; then
+                grub_has_esp=yes
+                esp_part_num=$(echo "$dst_part" | grep -oE '[0-9]+$')
+            fi
+        fi
+
+        # PV LVM : active le VG source, recrée la structure sur la destination (--init),
+        # puis synchronise chaque volume logique comme une partition ordinaire.
+        if [ "$fstype" = "LVM2_member" ]; then
+            local _vg
+            _vg=$(ssh "$OPENNEBULA_HOST" "pvs -o vg_name --noheadings '$src_part' 2>/dev/null | tr -d ' '")
+            if [ -z "$_vg" ]; then
+                echo "  Attention : LVM2_member sur $src_part sans VG connu, ignoré." >&2
+                continue
+            fi
+
+            ssh "$OPENNEBULA_HOST" "pvscan --cache 2>/dev/null; vgchange -ay '$_vg' 2>/dev/null"
+
+            local -a _lv_entries=()
+            mapfile -t _lv_entries < <(ssh "$OPENNEBULA_HOST" \
+                "lvs --noheadings -o lv_name,lv_size,lv_path --units b '$_vg' 2>/dev/null" \
+                | awk '{print $1 "\t" $2 "\t" $3}')
+
+            if [ "$INIT" = "yes" ]; then
+                pvcreate -ff -y "$dst_part" >/dev/null 2>&1
+                vgcreate "$_vg" "$dst_part" >/dev/null 2>&1
+                local _lve
+                for _lve in "${_lv_entries[@]}"; do
+                    local _lnm _lsz _llp
+                    IFS=$'\t' read -r _lnm _lsz _llp <<< "$_lve"
+                    _lsz=$(echo "$_lsz" | tr -d 'B')
+                    lvcreate -L "${_lsz}B" -n "$_lnm" "$_vg" >/dev/null 2>&1
+                done
+            fi
+
+            vgchange -ay "$_vg" >/dev/null 2>&1 || true
+            CURRENT_LVM_VG="$_vg"
+
+            local _lve
+            for _lve in "${_lv_entries[@]}"; do
+                local _lnm _lsz _slv _dlv
+                IFS=$'\t' read -r _lnm _lsz _slv <<< "$_lve"
+                _dlv="/dev/$_vg/$_lnm"
+
+                local _lft _lfu
+                _lft=$(ssh "$OPENNEBULA_HOST" "blkid -o value -s TYPE '$_slv'" 2>/dev/null || true)
+                _lfu=$(ssh "$OPENNEBULA_HOST" "blkid -o value -s UUID '$_slv'" 2>/dev/null || true)
+
+                if [ "$_lft" = "swap" ]; then
+                    [ "$INIT" = "yes" ] && mkswap ${_lfu:+-U "$_lfu"} "$_dlv" >/dev/null 2>&1
+                    continue
+                fi
+                [ -z "$_lft" ] && continue
+
+                if [ "$INIT" = "yes" ]; then
+                    case "$_lft" in
+                        ext2|ext3) mkfs."$_lft" -q -F ${_lfu:+-U "$_lfu"} "$_dlv" ;;
+                        ext4)
+                            mkfs.ext4 -q -F -O ^metadata_csum,^metadata_csum_seed,^64bit,^orphan_file \
+                                ${_lfu:+-U "$_lfu"} "$_dlv"
+                            tune2fs -O ^orphan_file "$_dlv" >/dev/null 2>&1 || true
+                            ;;
+                        xfs)
+                            mkfs.xfs -q -f "$_dlv"
+                            [ -n "$_lfu" ] && command -v xfs_admin >/dev/null 2>&1 && xfs_admin -U "$_lfu" "$_dlv" >/dev/null
+                            ;;
+                        *) echo "  Attention : filesystem '$_lft' (LV $_lnm) non géré, ignoré." >&2; continue ;;
+                    esac
+                fi
+
+                local _ec=0
+                case "$_lft" in
+                    ext2|ext3|ext4)
+                        e2fsck -fy "$_dlv" >/dev/null 2>&1 && _ec=0 || _ec=$?
+                        if [ "$_ec" -ge 4 ]; then
+                            echo "Erreur : e2fsck n'a pas pu réparer $_dlv (code $_ec)." >&2; return 1
+                        fi
+                        ;;
+                esac
+
+                local _smnt="$SRC_MOUNT_BASE/disk${disk_id}-lv${_lnm}"
+                local _dmnt="$DST_MOUNT_BASE/disk${disk_id}-lv${_lnm}"
+                ssh "$OPENNEBULA_HOST" "umount '$_smnt' 2>/dev/null; mkdir -p '$_smnt' && mount -o ro '$_slv' '$_smnt'"
+                umount "$_dmnt" 2>/dev/null || true
+                mkdir -p "$_dmnt"
+                mount "$_dlv" "$_dmnt"
+                DST_MOUNTS_TO_CLEANUP+=("$_dmnt")
+
+                rsync -aHAX --delete --numeric-ids -e ssh "${OPENNEBULA_HOST}:${_smnt}/" "$_dmnt/" >/dev/null
+
+                ssh "$OPENNEBULA_HOST" "umount '$_smnt'"
+
+                if [ -f "$_dmnt/etc/fstab" ]; then
+                    root_dst_mount="$_dmnt"
+                    root_fsuuid="$_lfu"
+                    # Corrections réseau/série appliquées ici (root encore monté) ;
+                    # pour les VM UEFI le chroot GRUB n'a pas lieu.
+                    _apply_root_fixes "$_dmnt"
+                fi
+            done
+
+            ssh "$OPENNEBULA_HOST" "vgchange -an '$_vg' 2>/dev/null" >/dev/null 2>&1 || true
+            continue
+        fi
 
         if [ "$fstype" = "swap" ]; then
             [ "$INIT" = "yes" ] && mkswap ${fsuuid:+-U "$fsuuid"} "$dst_part" >/dev/null 2>&1
@@ -277,24 +416,19 @@ EOF
             case "$fstype" in
                 ext2|ext3) mkfs."$fstype" -q -F ${fsuuid:+-U "$fsuuid"} "$dst_part" ;;
                 ext4)
-                    # Le mkfs.ext4 de Proxmox (e2fsprogs plus récent que celui d'origine
-                    # sur OpenNebula) active par défaut des fonctionnalités ext4 que GRUB
-                    # et/ou le e2fsck embarqué dans l'initramfs de la VM (ancien) ne
-                    # supportent pas : "unknown filesystem" côté grub-install/grub-probe
-                    # (metadata_csum, 64bit), puis "unsupported feature(s)" côté fsck au
-                    # boot (orphan_file). On les désactive systématiquement, même si la
-                    # source les a déjà (cas de metadata_csum/64bit ici) : c'est l'outil
-                    # GRUB côté Proxmox qui ne les supporte pas, pas la source.
                     mkfs.ext4 -q -F -O ^metadata_csum,^metadata_csum_seed,^64bit,^orphan_file \
                         ${fsuuid:+-U "$fsuuid"} "$dst_part"
-                    # mkfs.ext4 -O ^orphan_file n'est pas toujours honoré à la création
-                    # (selon la version d'e2fsprogs) : on force le désactivation après
-                    # coup via tune2fs, qui agit directement sur le superblock.
                     tune2fs -O ^orphan_file "$dst_part" >/dev/null 2>&1 || true
                     ;;
                 xfs)
                     mkfs.xfs -q -f "$dst_part"
                     [ -n "$fsuuid" ] && command -v xfs_admin >/dev/null 2>&1 && xfs_admin -U "$fsuuid" "$dst_part" >/dev/null
+                    ;;
+                vfat)
+                    local _vfat_id _vfat_lbl
+                    _vfat_id=$(echo "$fsuuid" | tr -d '-')
+                    _vfat_lbl=$(ssh "$OPENNEBULA_HOST" "blkid -o value -s LABEL '$src_part'" 2>/dev/null || true)
+                    mkfs.vfat -F32 ${_vfat_id:+-i "$_vfat_id"} ${_vfat_lbl:+-n "$_vfat_lbl"} "$dst_part" >/dev/null 2>&1
                     ;;
                 *)
                     echo "  Attention : filesystem '$fstype' non géré automatiquement, partition ignorée." >&2
@@ -326,10 +460,20 @@ EOF
         ssh "$OPENNEBULA_HOST" "umount '$src_mnt' 2>/dev/null; mkdir -p '$src_mnt' && mount -o ro '$src_part' '$src_mnt'"
         umount "$dst_mnt" 2>/dev/null || true
         mkdir -p "$dst_mnt"
-        mount "$dst_part" "$dst_mnt"
+        # vfat : mount sans l'option uid/gid par défaut pour rsync non-root
+        if [ "$fstype" = "vfat" ]; then
+            mount -o umask=0022 "$dst_part" "$dst_mnt"
+        else
+            mount "$dst_part" "$dst_mnt"
+        fi
         DST_MOUNTS_TO_CLEANUP+=("$dst_mnt")
 
-        rsync -aHAX --delete --numeric-ids -e ssh "${OPENNEBULA_HOST}:${src_mnt}/" "$dst_mnt/" >/dev/null
+        if [ "$fstype" = "vfat" ]; then
+            # vfat n'a pas de permissions/propriétaires Unix — rsync sans -p/-o/-g
+            rsync -rlt --delete -e ssh "${OPENNEBULA_HOST}:${src_mnt}/" "$dst_mnt/" >/dev/null
+        else
+            rsync -aHAX --delete --numeric-ids -e ssh "${OPENNEBULA_HOST}:${src_mnt}/" "$dst_mnt/" >/dev/null
+        fi
 
         ssh "$OPENNEBULA_HOST" "umount '$src_mnt'"
 
@@ -361,20 +505,43 @@ EOF
     blockdev --flushbufs "$pve_dev" 2>/dev/null || true
     sync
 
+    # Désactive le VG LVM avant de supprimer les mappings kpartx dont il dépend.
+    if [ -n "$CURRENT_LVM_VG" ]; then
+        vgchange -an "$CURRENT_LVM_VG" >/dev/null 2>&1 || true
+        CURRENT_LVM_VG=""
+    fi
     [ "${#kpartx_lines[@]}" -gt 0 ] && kpartx -d "$pve_dev" >/dev/null 2>&1 || true
     CURRENT_PVE_DEV=""
 
-    # 3. Réinstallation de GRUB (BIOS uniquement) si une racine a été synchronisée sur ce disque.
-    #
-    # GRUB ne sait pas correctement analyser une table de partitions kpartx posée sur un
-    # volume LVM (il traite le LV comme un device "diskfilter" et perd le décalage de la
-    # partition, ce qui donne "unknown filesystem" même si tout le reste est correct). On
-    # contourne ça en exposant le disque Proxmox via qemu-nbd (comme côté OpenNebula) : le
-    # noyau y fait alors un scan de partitions standard, que GRUB sait analyser normalement.
-    if [ -n "$root_dst_mount" ] && [ -n "$root_part_num" ]; then
-        # S'assure que tout ce qui a été écrit via le mapping kpartx (mkfs, rsync) est
-        # bien parvenu jusqu'au stockage avant de relire le même device via une
-        # connexion qemu-nbd séparée — sinon celle-ci peut voir des données obsolètes.
+    # 3. Post-traitement : GRUB (BIOS) ou config UEFI, selon le type de disque détecté.
+
+    if [ -n "$root_dst_mount" ] && [ "$grub_has_esp" = "yes" ]; then
+        # --- VM UEFI (GPT + partition ESP détectée) ---
+        # Le binaire EFI GRUB et grub.cfg ont déjà été copiés par rsync (ESP + /boot).
+        # Les corrections réseau/série ont été appliquées inline pendant le rsync du root LV.
+        # On configure juste Proxmox pour le boot UEFI.
+        if ! qm config "$PROXMOX_VMID" 2>/dev/null | grep -q "^bios: ovmf"; then
+            qm set "$PROXMOX_VMID" --bios ovmf >/dev/null 2>&1 \
+                && echo "  VM UEFI : --bios ovmf appliqué" \
+                || echo "  Attention : impossible d'appliquer --bios ovmf." >&2
+        fi
+        if ! qm config "$PROXMOX_VMID" 2>/dev/null | grep -q "^efidisk0:"; then
+            qm set "$PROXMOX_VMID" \
+                --efidisk0 "${PROXMOX_STORAGE}:0,efitype=4m,pre-enrolled-keys=0" \
+                >/dev/null 2>&1 \
+                && echo "  VM UEFI : efidisk0 créé" \
+                || echo "  Attention : impossible de créer efidisk0 (à créer manuellement)." >&2
+        fi
+        qm set "$PROXMOX_VMID" --serial0 socket >/dev/null 2>&1 || true
+
+    elif [ -n "$root_dst_mount" ] && [ -n "$root_part_num" ]; then
+        # --- VM BIOS/MBR, racine sur partition directe (sans LVM) ---
+        #
+        # GRUB ne sait pas correctement analyser une table de partitions kpartx posée sur un
+        # volume LVM (il traite le LV comme un device "diskfilter" et perd le décalage de la
+        # partition, ce qui donne "unknown filesystem" même si tout le reste est correct). On
+        # contourne ça en exposant le disque Proxmox via qemu-nbd (comme côté OpenNebula) : le
+        # noyau y fait alors un scan de partitions standard, que GRUB sait analyser normalement.
         sync
         blockdev --flushbufs "$pve_dev" 2>/dev/null || true
 
@@ -423,33 +590,7 @@ EOF
                 mount --bind "/$fs" "$grub_mnt/$fs"
             done
 
-            # Corrige le nom d'interface réseau dans /etc/network/interfaces : OpenNebula
-            # et Proxmox n'attribuent pas le même nom (udev/systemd nomme l'interface
-            # selon le bus PCI virtuel) — sans correction, l'interface ne se lève plus au
-            # boot ("Failed to start Raise network interfaces"). On remplace tout nom
-            # d'interface référencé (hors "lo") par $PROXMOX_NET_IFACE, en conservant la
-            # config IP telle quelle.
-            local ifaces_file="$grub_mnt/etc/network/interfaces"
-            if [ -f "$ifaces_file" ]; then
-                local -a old_ifaces
-                mapfile -t old_ifaces < <(awk '/^(auto|iface|allow-hotplug)[ \t]+/{print $2}' "$ifaces_file" | sort -u | grep -v '^lo$' || true)
-                local old_iface
-                for old_iface in "${old_ifaces[@]}"; do
-                    [ "$old_iface" = "$PROXMOX_NET_IFACE" ] && continue
-                    sed -i "s/\b$old_iface\b/$PROXMOX_NET_IFACE/g" "$ifaces_file"
-                done
-            fi
-
-            # Active la console série (ttyS0) dans l'image, pour pouvoir ensuite utiliser
-            # `qm terminal <vmid>` (terminal SSH classique, copier/coller normal) plutôt
-            # que la console graphique noVNC (qui ne permet pas de coller un mot de passe).
-            # Les images OpenNebula n'ont généralement pas ça par défaut.
-            if ! grep -q "console=ttyS0" "$grub_mnt/etc/default/grub" 2>/dev/null; then
-                sed -i 's/^GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"/GRUB_CMDLINE_LINUX_DEFAULT="\1 console=tty0 console=ttyS0,115200n8"/' "$grub_mnt/etc/default/grub"
-            fi
-            mkdir -p "$grub_mnt/etc/systemd/system/getty.target.wants"
-            ln -sf /lib/systemd/system/serial-getty@.service \
-                "$grub_mnt/etc/systemd/system/getty.target.wants/serial-getty@ttyS0.service"
+            _apply_root_fixes "$grub_mnt"
 
             local grub_log
             grub_log=$(mktemp)
@@ -488,6 +629,14 @@ EOF
 
             qm set "$PROXMOX_VMID" --serial0 socket >/dev/null 2>&1 || true
         fi
+
+    elif [ -n "$root_dst_mount" ]; then
+        # --- VM BIOS avec LVM (racine dans un LV, pas de partition numérotée directe) ---
+        # Les corrections réseau/série ont été appliquées inline. grub-install sur LVM
+        # nécessite une intervention manuelle (voir doc).
+        echo "  Attention : GRUB sur disque BIOS+LVM non géré automatiquement." >&2
+        echo "             Réinstallez GRUB manuellement après démarrage de la VM." >&2
+        qm set "$PROXMOX_VMID" --serial0 socket >/dev/null 2>&1 || true
     fi
 
     ssh "$OPENNEBULA_HOST" "kpartx -d $NBD_DEVICE >/dev/null 2>&1; qemu-nbd --disconnect $NBD_DEVICE" >/dev/null 2>&1 || true
