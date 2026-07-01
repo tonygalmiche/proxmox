@@ -44,6 +44,11 @@ for n in /dev/nbd0 /dev/nbd1 /dev/nbd2 /dev/nbd3 /dev/nbd4 /dev/nbd5; do
     [ -b "$n" ] && kpartx -d "$n" >/dev/null 2>&1 || true
 done
 qemu-nbd --disconnect "$NBD" >/dev/null 2>&1 || true
+# Supprime les entrées partition stales du kernel (nbd2p*).
+# qemu-nbd --disconnect ne les supprime pas → sfdisk échoue avec I/O error
+# lors de la reconnexion suivante si les partitions étaient montées/LVM.
+partx -d "$NBD" 2>/dev/null || true
+sleep 1
 
 FORMAT=$(qemu-img info "$SRC" | awk -F': ' '/^file format/{print $2}')
 qemu-nbd --read-only --format="$FORMAT" --connect="$NBD" "$SRC"
