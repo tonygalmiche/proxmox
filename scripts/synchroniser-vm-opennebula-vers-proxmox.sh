@@ -322,11 +322,31 @@ EOF
                 | awk '{print $1 "\t" $2 "\t" $3}')
 
             if [ "$INIT" = "yes" ]; then
-                # Supprime le VG s'il existe déjà (résidu d'un --init précédent interrompu).
+                # Nettoyage complet des résidus LVM : udev peut avoir auto-activé le VG
+                # dès que kpartx a créé la partition (les métadonnées LVM sur la partition
+                # source sont visibles par le noyau local). On force la suppression des
+                # device-mapper entries avant de recréer proprement.
                 vgchange -an "$_vg" 2>/dev/null || true
+                local _dm_pfx
+                _dm_pfx=$(printf '%s' "$_vg" | sed 's/-/--/g')
+                while IFS= read -r _dm; do
+                    dmsetup remove --force "$_dm" 2>/dev/null || true
+                done < <(dmsetup ls --noheadings 2>/dev/null | awk '{print $1}' \
+                    | grep -E "^${_dm_pfx}-" || true)
                 vgremove -f "$_vg" 2>/dev/null || true
-                pvcreate -ff -y "$dst_part" >/dev/null 2>&1
-                vgcreate "$_vg" "$dst_part" >/dev/null 2>&1
+                wipefs -a "$dst_part" >/dev/null 2>&1 || true
+                pvscan --cache "$dst_part" 2>/dev/null || true
+                local _lvm_err
+                _lvm_err=$(mktemp)
+                if ! pvcreate -ff -y "$dst_part" >"$_lvm_err" 2>&1; then
+                    echo "Erreur : pvcreate -ff -y $dst_part a échoué :" >&2
+                    cat "$_lvm_err" >&2; rm -f "$_lvm_err"; return 1
+                fi
+                if ! vgcreate "$_vg" "$dst_part" >"$_lvm_err" 2>&1; then
+                    echo "Erreur : vgcreate $_vg $dst_part a échoué :" >&2
+                    cat "$_lvm_err" >&2; rm -f "$_lvm_err"; return 1
+                fi
+                rm -f "$_lvm_err"
                 local _lve
                 for _lve in "${_lv_entries[@]}"; do
                     local _lnm _lsz _llp
