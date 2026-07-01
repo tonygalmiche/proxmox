@@ -47,8 +47,7 @@ qemu-nbd --disconnect "$NBD" >/dev/null 2>&1 || true
 
 FORMAT=$(qemu-img info "$SRC" | awk -F': ' '/^file format/{print $2}')
 qemu-nbd --read-only --format="$FORMAT" --connect="$NBD" "$SRC"
-partprobe "$NBD" 2>/dev/null || true
-sleep 2
+sleep 3
 
 # sfdisk AVANT vgchange : vgchange envoie des FLUSH qui rendent le NBD
 # read-only inaccessible en lecture (I/O error).
