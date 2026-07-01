@@ -1,2 +1,5 @@
 archives/
 scripts/config.sh
+python/config.ini
+python/**/__pycache__/
+python/**/*.pyc
