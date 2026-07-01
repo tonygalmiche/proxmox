@@ -79,7 +79,8 @@ echo "$SFDISK_DUMP"
 echo "__SFDISK_END__"
 
 # Désactive les VG auto-activés par udev APRÈS sfdisk.
-vgchange -an 2>/dev/null || true
+# >/dev/null : vgchange envoie "N logical volume(s)..." sur stdout → pollue la liste des partitions.
+vgchange -an >/dev/null 2>&1 || true
 
 # Liste des partitions tirée du dump sfdisk (pas de ls /dev/nbd*p*
 # qui peut contenir des entrées stales d'un run précédent).
