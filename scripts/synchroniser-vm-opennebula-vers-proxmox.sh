@@ -322,6 +322,9 @@ EOF
                 | awk '{print $1 "\t" $2 "\t" $3}')
 
             if [ "$INIT" = "yes" ]; then
+                # Supprime le VG s'il existe déjà (résidu d'un --init précédent interrompu).
+                vgchange -an "$_vg" 2>/dev/null || true
+                vgremove -f "$_vg" 2>/dev/null || true
                 pvcreate -ff -y "$dst_part" >/dev/null 2>&1
                 vgcreate "$_vg" "$dst_part" >/dev/null 2>&1
                 local _lve
