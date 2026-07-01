@@ -73,17 +73,19 @@ if [ "$CONNECTED" -eq 0 ]; then
     exit 1
 fi
 
+SFDISK_DUMP=$(sfdisk -d "$NBD" 2>/dev/null || true)
 echo "__SFDISK_START__"
-sfdisk -d "$NBD" 2>/dev/null || true
+echo "$SFDISK_DUMP"
 echo "__SFDISK_END__"
 
 # Désactive les VG auto-activés par udev APRÈS sfdisk.
 vgchange -an 2>/dev/null || true
 
-NBD_BASE=$(basename "$NBD")
-PARTS=$(ls /dev/${NBD_BASE}p* 2>/dev/null || true)
+# Liste des partitions tirée du dump sfdisk (pas de ls /dev/nbd*p*
+# qui peut contenir des entrées stales d'un run précédent).
+PARTS=$(printf '%s\n' "$SFDISK_DUMP" | awk '/^\/dev\// {print $1}')
 if [ -n "$PARTS" ]; then
-    for p in $PARTS; do echo "$p"; done
+    printf '%s\n' "$PARTS"
 else
     echo "$NBD"
 fi
