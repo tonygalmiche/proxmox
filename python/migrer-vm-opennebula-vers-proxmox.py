@@ -97,6 +97,7 @@ def create_vm(vm_name: str, cfg) -> None:
               f"{vmid:<8} {disk.disk_id:<6} {disk.image:<30} {disk.size_mb:<10} {size_gb}")
 
     pve.set_boot_disk(vmid)
+    pve.set_serial(vmid)
     print(f"VM '{vm_name}' créée sur Proxmox (VMID={vmid}).")
 
 
