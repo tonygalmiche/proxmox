@@ -72,9 +72,26 @@ normalize_partition_table() {
 
 declare -a DST_MOUNTS_TO_CLEANUP=()
 CURRENT_PVE_DEV=""
+CURRENT_GRUB_MNT=""
 
 cleanup() {
     local m
+    # Démontage des mounts GRUB (tmpfs /dev, bind mounts nbd, bind mounts proc/sys,
+    # double bind de la racine) — dans l'ordre inverse de leur création, du plus imbriqué
+    # vers l'extérieur. Nécessaire si le script est interrompu pendant la phase GRUB
+    # (grub-install, update-grub, erreur dans le chroot...).
+    if [ -n "$CURRENT_GRUB_MNT" ]; then
+        for m in sys proc; do
+            mountpoint -q "$CURRENT_GRUB_MNT/$m" 2>/dev/null && umount "$CURRENT_GRUB_MNT/$m" 2>/dev/null || true
+        done
+        for m in "$GRUB_NBD_DEVICE"p* "$GRUB_NBD_DEVICE"; do
+            mountpoint -q "$CURRENT_GRUB_MNT$m" 2>/dev/null && umount "$CURRENT_GRUB_MNT$m" 2>/dev/null || true
+        done
+        mountpoint -q "$CURRENT_GRUB_MNT/dev" 2>/dev/null && umount "$CURRENT_GRUB_MNT/dev" 2>/dev/null || true
+        mountpoint -q "$CURRENT_GRUB_MNT" 2>/dev/null && umount "$CURRENT_GRUB_MNT" 2>/dev/null || true
+        mountpoint -q "$CURRENT_GRUB_MNT" 2>/dev/null && umount "$CURRENT_GRUB_MNT" 2>/dev/null || true
+        CURRENT_GRUB_MNT=""
+    fi
     for m in "${DST_MOUNTS_TO_CLEANUP[@]:-}"; do
         [ -n "$m" ] && mountpoint -q "$m" 2>/dev/null && umount "$m" 2>/dev/null || true
     done
@@ -335,10 +352,12 @@ EOF
         local grub_mnt="$DST_MOUNT_BASE/grub-disk${disk_id}"
         mkdir -p "$grub_mnt"
         mount "$grub_root_dev" "$grub_mnt"
+        CURRENT_GRUB_MNT="$grub_mnt"
 
         if [ ! -e "$grub_mnt/etc/fstab" ]; then
             echo "  Attention : $grub_root_dev monté sur $grub_mnt semble vide ou incorrect (pas de /etc/fstab), GRUB ignoré." >&2
             umount "$grub_mnt" 2>/dev/null || true
+            CURRENT_GRUB_MNT=""
             qemu-nbd --disconnect "$GRUB_NBD_DEVICE" >/dev/null 2>&1 || true
         else
             mount --bind "$grub_mnt" "$grub_mnt"
@@ -429,6 +448,7 @@ EOF
             umount "$grub_mnt"
             umount "$grub_mnt"
             qemu-nbd --disconnect "$GRUB_NBD_DEVICE" >/dev/null 2>&1 || true
+            CURRENT_GRUB_MNT=""
 
             qm set "$PROXMOX_VMID" --serial0 socket >/dev/null 2>&1 || true
         fi
