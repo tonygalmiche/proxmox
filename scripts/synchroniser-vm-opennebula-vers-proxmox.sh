@@ -162,7 +162,15 @@ EOF
     if [ "$INIT" = "yes" ]; then
         echo "  Copie de la table de partitions ($on_source -> $pve_dev)"
         kpartx -d "$pve_dev" >/dev/null 2>&1 || true
-        ssh "$OPENNEBULA_HOST" "sfdisk -d $NBD_DEVICE" 2>/dev/null | sfdisk "$pve_dev" >/dev/null 2>&1 || true
+        local sfdisk_out
+        sfdisk_out=$(mktemp)
+        if ! ssh "$OPENNEBULA_HOST" "sfdisk -d $NBD_DEVICE" 2>"$sfdisk_out" | sfdisk "$pve_dev" >>"$sfdisk_out" 2>&1; then
+            echo "Erreur : impossible de copier la table de partitions sur $pve_dev." >&2
+            cat "$sfdisk_out" >&2
+            rm -f "$sfdisk_out"
+            return 1
+        fi
+        rm -f "$sfdisk_out"
         partprobe "$pve_dev" 2>/dev/null || true
         sleep 1
     fi
