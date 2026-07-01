@@ -14,7 +14,9 @@ from run import run, ssh
 def apply_table(device: str, sfdisk_dump: str) -> None:
     """Recopie la table de partitions sur device (--init uniquement)."""
     run(["kpartx", "-d", device], check=False)
-    r = run(["sfdisk", device], stdin=sfdisk_dump, capture=True, check=False)
+    # --no-reread : le disque peut être "en cours d'utilisation" par des dm stales
+    # du run précédent ; kpartx -avs relira les partitions juste après.
+    r = run(["sfdisk", "--no-reread", device], stdin=sfdisk_dump, capture=True, check=False)
     if r.returncode != 0:
         raise RuntimeError(f"sfdisk échoué sur {device}:\n{r.stderr}")
     run(["partprobe", device], check=False)
