@@ -49,6 +49,10 @@ FORMAT=$(qemu-img info "$SRC" | awk -F': ' '/^file format/{print $2}')
 qemu-nbd --read-only --format="$FORMAT" --connect="$NBD" "$SRC"
 sleep 2
 
+# udev peut auto-activer les VG LVM dès la connexion du NBD,
+# ce qui rend /dev/nbd*pX "busy" pour kpartx. On désactive avant.
+vgchange -an 2>/dev/null || true
+
 echo "__SFDISK_START__"
 sfdisk -d "$NBD" 2>/dev/null || true
 echo "__SFDISK_END__"
