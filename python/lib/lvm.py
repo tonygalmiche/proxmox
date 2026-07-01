@@ -65,7 +65,7 @@ def get_remote_lvs(host: str, vg: str) -> List[LvInfo]:
 def remote_get_vg_backup(host: str, vg: str) -> str:
     """Retourne le contenu du backup vgcfgbackup du VG source (préserve VG+LV UUIDs)."""
     r = ssh(host,
-            f"vgcfgbackup -f /tmp/_vgcfg_{vg} '{vg}' 2>/dev/null "
+            f"vgcfgbackup -f /tmp/_vgcfg_{vg} '{vg}' >/dev/null 2>&1 "
             f"&& cat /tmp/_vgcfg_{vg} && rm -f /tmp/_vgcfg_{vg}",
             capture=True, check=False)
     return r.stdout
