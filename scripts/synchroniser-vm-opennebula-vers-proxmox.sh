@@ -146,12 +146,9 @@ done
 kpartx -d "$NBD" >/dev/null 2>&1 || true
 qemu-nbd --disconnect "$NBD" >/dev/null 2>&1 || true
 FORMAT=$(qemu-img info "$SRC" | awk -F': ' '/^file format/{print $2}')
-# Pour les formats non-raw (ex. qcow2), qemu-nbd doit rester actif pour
-# traduire les I/O. Sans setsid, son processus fils meurt quand la session
-# SSH se ferme (même session POSIX → SIGHUP), et toutes les opérations
-# suivantes sur /dev/nbd0 échouent silencieusement.
-setsid qemu-nbd --read-only --format="$FORMAT" --connect="$NBD" "$SRC" &>/dev/null &
-disown $!
+# qemu-nbd --connect se daemonise seul (fork interne, parent sort code 0,
+# daemon survit à la fermeture de la session SSH).
+qemu-nbd --read-only --format="$FORMAT" --connect="$NBD" "$SRC"
 sleep 2
 echo "__SFDISK_START__"
 sfdisk -d "$NBD" 2>/dev/null || true
