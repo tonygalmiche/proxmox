@@ -26,8 +26,7 @@ def get_remote_vg(host: str, partition: str) -> Optional[str]:
 
 
 def remote_activate(host: str, partition: str, vg: str) -> None:
-    # --devices force LVM à n'utiliser que le chemin dm (évite le conflit
-    # /dev/nbd2p4 vs /dev/mapper/nbd2p4 qui sont le même PV pour LVM)
+    # --devices restreint LVM au device kernel exact (évite les conflits de doublon PV)
     r = ssh(host,
             f"pvscan --cache '{partition}' 2>/dev/null; "
             f"vgchange -ay --devices '{partition}' '{vg}'",

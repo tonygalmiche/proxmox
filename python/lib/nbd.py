@@ -47,22 +47,22 @@ qemu-nbd --disconnect "$NBD" >/dev/null 2>&1 || true
 
 FORMAT=$(qemu-img info "$SRC" | awk -F': ' '/^file format/{print $2}')
 qemu-nbd --read-only --format="$FORMAT" --connect="$NBD" "$SRC"
+partprobe "$NBD" 2>/dev/null || true
 sleep 2
 
-# udev peut auto-activer les VG LVM dès la connexion du NBD,
-# ce qui rend /dev/nbd*pX "busy" pour kpartx. On désactive avant.
+# Désactive les VG auto-activés par udev (sinon les partitions sont "busy").
+# On utilise les devices kernel /dev/nbdXpY directement (pas kpartx) car le
+# kernel les crée automatiquement via max_part=16.
 vgchange -an 2>/dev/null || true
 
 echo "__SFDISK_START__"
 sfdisk -d "$NBD" 2>/dev/null || true
 echo "__SFDISK_END__"
 
-kpartx -avs "$NBD" >/dev/null 2>&1 || true
-sleep 0.5
 NBD_BASE=$(basename "$NBD")
-MAPS=$(ls /dev/mapper/${NBD_BASE}p* 2>/dev/null || true)
-if [ -n "$MAPS" ]; then
-    for m in $MAPS; do echo "$m"; done
+PARTS=$(ls /dev/${NBD_BASE}p* 2>/dev/null || true)
+if [ -n "$PARTS" ]; then
+    for p in $PARTS; do echo "$p"; done
 else
     echo "$NBD"
 fi
