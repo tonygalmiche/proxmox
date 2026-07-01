@@ -40,14 +40,17 @@ def normalize(sfdisk_dump: str) -> List[str]:
     for line in sfdisk_dump.splitlines():
         if not line.startswith("/"):
             continue
+        # sfdisk peut écrire "start= 2048" (espace après =) ou "start=2048"
         start = size = ptype = ""
-        for field in re.split(r"[,\s]+", line):
-            if field.startswith("start="):
-                start = field.split("=", 1)[1]
-            elif field.startswith("size="):
-                size = field.split("=", 1)[1]
-            elif field.startswith("type="):
-                ptype = field.split("=", 1)[1]
+        m = re.search(r'\bstart=\s*(\d+)', line)
+        if m:
+            start = m.group(1)
+        m = re.search(r'\bsize=\s*(\d+)', line)
+        if m:
+            size = m.group(1)
+        m = re.search(r'\btype=\s*(\S+?)(?:,|\s|$)', line)
+        if m:
+            ptype = m.group(1)
         result.append(f"{start},{size},{ptype}")
     return result
 

@@ -50,14 +50,14 @@ qemu-nbd --read-only --format="$FORMAT" --connect="$NBD" "$SRC"
 partprobe "$NBD" 2>/dev/null || true
 sleep 2
 
-# Désactive les VG auto-activés par udev (sinon les partitions sont "busy").
-# On utilise les devices kernel /dev/nbdXpY directement (pas kpartx) car le
-# kernel les crée automatiquement via max_part=16.
-vgchange -an 2>/dev/null || true
-
+# sfdisk AVANT vgchange : vgchange envoie des FLUSH qui rendent le NBD
+# read-only inaccessible en lecture (I/O error).
 echo "__SFDISK_START__"
-sfdisk -d "$NBD" 2>&1 || true
+sfdisk -d "$NBD" 2>/dev/null || true
 echo "__SFDISK_END__"
+
+# Désactive les VG auto-activés par udev APRÈS sfdisk.
+vgchange -an 2>/dev/null || true
 
 NBD_BASE=$(basename "$NBD")
 PARTS=$(ls /dev/${NBD_BASE}p* 2>/dev/null || true)
@@ -83,10 +83,6 @@ def remote_connect(host: str, source: str, nbd_device: str,
                    mount_base: str) -> Tuple[str, List[str]]:
     """Retourne (sfdisk_dump, liste_partitions)."""
     r = ssh_script(host, _CONNECT_SCRIPT, source, nbd_device, mount_base, capture=True)
-
-    import sys
-    print(f"DEBUG stdout:\n{r.stdout!r}", file=sys.stderr)
-    print(f"DEBUG stderr:\n{r.stderr!r}", file=sys.stderr)
 
     sfdisk_lines: List[str] = []
     partitions: List[str] = []
