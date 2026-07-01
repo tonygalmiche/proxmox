@@ -172,6 +172,14 @@ modprobe nbd max_part=16 2>/dev/null || true
 for m in $(mount | awk -v base="$BASE" 'index($3, base) == 1 {print $3}'); do
     umount "$m" 2>/dev/null || true
 done
+# Désactive tous les VG et nettoie les mappings kpartx de TOUS les NBD avant
+# (re)connexion : les runs précédents laissent des entrées device-mapper avec
+# le même UUID de PV (même image, NBD différent), ce qui fait échouer
+# vgchange -ay avec "0 logical volume(s) now active" sur le nouveau NBD.
+vgchange -an 2>/dev/null || true
+for _stale_nbd in /dev/nbd0 /dev/nbd1 /dev/nbd2 /dev/nbd3 /dev/nbd4 /dev/nbd5; do
+    [ -b "$_stale_nbd" ] && kpartx -d "$_stale_nbd" >/dev/null 2>&1 || true
+done
 kpartx -d "$NBD" >/dev/null 2>&1 || true
 qemu-nbd --disconnect "$NBD" >/dev/null 2>&1 || true
 FORMAT=$(qemu-img info "$SRC" | awk -F': ' '/^file format/{print $2}')
@@ -314,7 +322,10 @@ EOF
                 continue
             fi
 
-            ssh "$OPENNEBULA_HOST" "pvscan --cache 2>/dev/null; vgchange -ay '$_vg' 2>/dev/null"
+            if ! ssh "$OPENNEBULA_HOST" "pvscan --cache '$src_part' 2>/dev/null; vgchange -ay '$_vg'"; then
+                echo "  Erreur : impossible d'activer le VG '$_vg' sur $OPENNEBULA_HOST." >&2
+                return 1
+            fi
 
             local -a _lv_entries=()
             mapfile -t _lv_entries < <(ssh "$OPENNEBULA_HOST" \
