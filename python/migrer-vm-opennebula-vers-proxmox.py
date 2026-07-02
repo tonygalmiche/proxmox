@@ -146,6 +146,15 @@ def sync_vm(vm_name: str, cfg, init: bool) -> None:
 def _migrate_disk(disk_id: int, on_source: str, pve_volume: str,
                   proxmox_vmid: str, cfg, init: bool,
                   cleanup: cleanup_mod.Cleanup) -> None:
+    """src_parts et dst_parts sont appariées par position (zip), pas par
+    UUID ni contenu : la partition n°1 source est supposée correspondre à
+    la partition n°1 destination, etc. Ce n'est fiable que si les deux
+    tables sont identiques (mêmes partitions, même ordre) ; c'est ce que
+    vérifie _check_partition_consistency() juste avant le zip, en comparant
+    le nombre de partitions et le dump sfdisk normalisé des deux côtés.
+    La partition BIOS Boot (ef02) ajoutée par --reinstall-grub n'existe
+    jamais côté source : elle est retirée de dst_parts en amont pour ne
+    pas décaler l'appariement."""
 
     pve_dev = pve.get_disk_path(pve_volume)
     cleanup.pve_dev = pve_dev
@@ -161,6 +170,14 @@ def _migrate_disk(disk_id: int, on_source: str, pve_volume: str,
         part.apply_table(pve_dev, sfdisk_dump)
 
     dst_parts = part.kpartx_add(pve_dev)
+
+    # La partition BIOS Boot (ef02) ajoutée par --reinstall-grub n'existe
+    # jamais côté source OpenNebula : on l'exclut de la synchronisation.
+    bios_boot_nums = part.bios_boot_partition_numbers(pve_dev)
+    if bios_boot_nums:
+        dst_parts = [p for p in dst_parts
+                    if not (m := re.search(r'\d+$', p))
+                    or int(m.group()) not in bios_boot_nums]
 
     # 3. Vérification de cohérence
     _check_partition_consistency(cfg.opennebula_host, cfg.nbd_device,
@@ -374,7 +391,7 @@ def _check_partition_consistency(host: str, nbd_device: str,
         raise RuntimeError("Présence d'une table de partitions différente entre source et destination.")
 
     if has_table_src:
-        dst_dump = part.get_local_dump(pve_dev)
+        dst_dump = part.strip_bios_boot(part.get_local_dump(pve_dev))
         if part.normalize(sfdisk_dump) != part.normalize(dst_dump):
             raise RuntimeError(
                 f"Table de partitions source ≠ destination.\n"

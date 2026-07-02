@@ -13,6 +13,8 @@ from run import run, ssh
 # Espace minimal (secteurs) pour accueillir une partition BIOS Boot (ef02).
 _MIN_BIOS_BOOT_SECTORS = 64
 
+_BIOS_BOOT_TYPE_RE = re.compile(r'type=\s*21686148-6449-6[Ee]6[Ff]-744[Ee]-656564454649')
+
 
 def apply_table(device: str, sfdisk_dump: str) -> None:
     """Recopie la table de partitions sur device (--init uniquement)."""
@@ -84,7 +86,7 @@ def find_bios_boot_gap(device: str) -> Optional[Tuple[int, int]]:
     dump = get_local_dump(device)
     if "label: gpt" not in dump:
         return None
-    if re.search(r'type=\s*21686148-6449-6[Ee]6[Ff]-744[Ee]-656564454649', dump):
+    if _BIOS_BOOT_TYPE_RE.search(dump):
         return None  # BIOS Boot Partition déjà présente
 
     first_start = None
@@ -125,6 +127,30 @@ def add_bios_boot_partition(device: str, start: int, end: int) -> None:
          "--change-name=0:BIOS boot partition", device])
     run(["partprobe", device], check=False)
     time.sleep(1)
+
+
+def bios_boot_partition_numbers(device: str) -> set:
+    """Numéros de partition (1-based) de type BIOS Boot (ef02) sur device.
+
+    Ajoutée par reinstall-grub, cette partition n'existe jamais côté source
+    OpenNebula : il faut l'exclure des comparaisons/copies source↔destination."""
+    numbers = set()
+    for line in get_local_dump(device).splitlines():
+        if not line.startswith("/dev/"):
+            continue
+        if _BIOS_BOOT_TYPE_RE.search(line):
+            m = re.match(rf'^{re.escape(device)}p?(\d+)\s*:', line)
+            if m:
+                numbers.add(int(m.group(1)))
+    return numbers
+
+
+def strip_bios_boot(dump: str) -> str:
+    """Retire du dump sfdisk les lignes de type BIOS Boot (ef02)."""
+    return "\n".join(
+        line for line in dump.splitlines()
+        if not (line.startswith("/dev/") and _BIOS_BOOT_TYPE_RE.search(line))
+    )
 
 
 def flush(device: str, partitions: List[str]) -> None:
