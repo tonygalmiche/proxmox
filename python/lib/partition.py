@@ -109,9 +109,17 @@ def find_bios_boot_gap(device: str) -> Optional[Tuple[int, int]]:
 
 def add_bios_boot_partition(device: str, start: int, end: int) -> None:
     """Ajoute une partition BIOS Boot (ef02) sur l'espace libre [start, end].
-    --set-alignment=1 : le gap [34, first_lba-1] n'est pas aligné sur 2048
-    secteurs (alignement par défaut de sgdisk), sinon sgdisk avance le
-    start jusqu'à dépasser end et échoue ("Could not create partition")."""
+
+    Le header GPT existant a été écrit avec FirstUsableLBA=2048 (alignement
+    1 MiB par défaut lors de sa création). --set-alignment=1 ne recalcule ce
+    champ qu'au moment où gdisk ÉCRIT le header sur disque : passé dans la
+    même invocation qu'un --new qui échoue, rien n'est sauvegardé (y compris
+    le changement d'alignement) et --new est validé contre l'ancien
+    FirstUsableLBA=2048, donc [34,2047] est toujours rejeté. Il faut donc
+    écrire l'alignement dans un premier appel séparé, puis créer la
+    partition dans un second appel (le header a alors FirstUsableLBA=34).
+    """
+    run(["sgdisk", "--set-alignment=1", device])
     run(["sgdisk", "--set-alignment=1", f"--new=0:{start}:{end}", "--typecode=0:ef02",
          "--change-name=0:BIOS boot partition", device])
     run(["partprobe", device], check=False)
