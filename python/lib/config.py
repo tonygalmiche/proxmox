@@ -20,6 +20,7 @@ class Config:
     proxmox_net_iface: str
     grub_nbd_device: str
     dst_mount_base: str
+    thin_pool_alert_pct: float
 
 
 def load(path: str) -> Config:
@@ -47,4 +48,5 @@ def load(path: str) -> Config:
         proxmox_net_iface= get("proxmox",    "net_iface"),
         grub_nbd_device  = get("proxmox",    "grub_nbd_device"),
         dst_mount_base   = get("proxmox",    "dst_mount_base"),
+        thin_pool_alert_pct = float(get("proxmox", "thin_pool_alert_pct")),
     )

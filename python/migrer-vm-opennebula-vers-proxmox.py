@@ -121,6 +121,14 @@ def sync_vm(vm_name: str, cfg, init: bool) -> None:
         die(f"nombre de disques différent : OpenNebula={len(on_vm.disks)}, "
             f"Proxmox={len(pve_disks)}.")
 
+    usage_pct = pve.get_storage_usage_pct(cfg.proxmox_storage)
+    print(f"  Occupation du storage '{cfg.proxmox_storage}' : {usage_pct:.1f}% "
+          f"(seuil d'alerte : {cfg.thin_pool_alert_pct:.0f}%)")
+    if usage_pct >= cfg.thin_pool_alert_pct:
+        die(f"storage '{cfg.proxmox_storage}' à {usage_pct:.1f}%, "
+            f"seuil d'alerte {cfg.thin_pool_alert_pct:.0f}% dépassé — "
+            f"synchronisation bloquée pour éviter de saturer le pool.")
+
     import time
     start = time.time()
     print(f"VM '{vm_name}' : OpenNebula ID={on_vm.vm_id} ↔ Proxmox VMID={pve_vm.vmid} "

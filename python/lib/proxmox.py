@@ -103,6 +103,18 @@ def get_verbose_status(vmid: str) -> Dict[str, str]:
     return status
 
 
+def get_storage_usage_pct(storage: str) -> float:
+    """Occupation (%) d'un storage Proxmox, via 'pvesm status' (colonne '%').
+    Fonctionne pour tout type de storage (lvmthin, dir, zfs...), pas
+    seulement LVM-thin."""
+    r = run(["pvesm", "status"], capture=True)
+    for line in r.stdout.splitlines()[1:]:
+        parts = line.split()
+        if parts and parts[0] == storage:
+            return float(parts[-1].rstrip("%"))
+    raise RuntimeError(f"Storage '{storage}' introuvable dans 'pvesm status'.")
+
+
 def set_uefi(vmid: str, storage: str) -> None:
     cfg = run(["qm", "config", vmid], capture=True).stdout
     if "bios: ovmf" not in cfg:
