@@ -108,8 +108,11 @@ def find_bios_boot_gap(device: str) -> Optional[Tuple[int, int]]:
 
 
 def add_bios_boot_partition(device: str, start: int, end: int) -> None:
-    """Ajoute une partition BIOS Boot (ef02) sur l'espace libre [start, end]."""
-    run(["sgdisk", f"--new=0:{start}:{end}", "--typecode=0:ef02",
+    """Ajoute une partition BIOS Boot (ef02) sur l'espace libre [start, end].
+    --set-alignment=1 : le gap [34, first_lba-1] n'est pas aligné sur 2048
+    secteurs (alignement par défaut de sgdisk), sinon sgdisk avance le
+    start jusqu'à dépasser end et échoue ("Could not create partition")."""
+    run(["sgdisk", "--set-alignment=1", f"--new=0:{start}:{end}", "--typecode=0:ef02",
          "--change-name=0:BIOS boot partition", device])
     run(["partprobe", device], check=False)
     time.sleep(1)
