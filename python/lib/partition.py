@@ -110,17 +110,18 @@ def find_bios_boot_gap(device: str) -> Optional[Tuple[int, int]]:
 def add_bios_boot_partition(device: str, start: int, end: int) -> None:
     """Ajoute une partition BIOS Boot (ef02) sur l'espace libre [start, end].
 
-    Le header GPT existant a été écrit avec FirstUsableLBA=2048 (alignement
-    1 MiB par défaut lors de sa création). --set-alignment=1 ne recalcule ce
-    champ qu'au moment où gdisk ÉCRIT le header sur disque : passé dans la
-    même invocation qu'un --new qui échoue, rien n'est sauvegardé (y compris
-    le changement d'alignement) et --new est validé contre l'ancien
-    FirstUsableLBA=2048, donc [34,2047] est toujours rejeté. Il faut donc
-    écrire l'alignement dans un premier appel séparé, puis créer la
-    partition dans un second appel (le header a alors FirstUsableLBA=34).
+    Le header GPT existant a été écrit par util-linux fdisk avec
+    FirstUsableLBA=2048 stocké tel quel (alignement 1 MiB), indépendamment
+    de tout calcul dynamique. --set-alignment=1 seul ne le fait PAS
+    recalculer. Il faut aussi passer --move-main-table=2 (déplace la table
+    principale vers sa position actuelle) : cette opération force gdisk à
+    recalculer FirstUsableLBA à partir de l'alignement courant, le faisant
+    passer de 2048 à 34 et libérant le gap. Vérifié avec sgdisk --pretend :
+    sans --move-main-table, --new=0:34:2047 échoue toujours même avec
+    alignement=1 ; avec, First usable sector devient 34.
     """
-    run(["sgdisk", "--set-alignment=1", device])
-    run(["sgdisk", "--set-alignment=1", f"--new=0:{start}:{end}", "--typecode=0:ef02",
+    run(["sgdisk", "--set-alignment=1", "--move-main-table=2",
+         f"--new=0:{start}:{end}", "--typecode=0:ef02",
          "--change-name=0:BIOS boot partition", device])
     run(["partprobe", device], check=False)
     time.sleep(1)
