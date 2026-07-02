@@ -5,8 +5,9 @@ Création de VM, récupération de la configuration, gestion des disques
 et application des paramètres post-migration (UEFI, serial).
 """
 import re
+import time
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from run import run
 
@@ -77,6 +78,29 @@ def get_disk_path(volume: str) -> str:
 def get_status(vmid: str) -> str:
     parts = run(["qm", "status", vmid], capture=True).stdout.split()
     return parts[-1] if parts else ""
+
+
+def stop_vm(vmid: str, timeout: int = 60) -> None:
+    run(["qm", "stop", vmid])
+    start = time.time()
+    while get_status(vmid) != "stopped":
+        if time.time() - start > timeout:
+            raise RuntimeError(f"VM {vmid} ne s'est pas arrêtée après {timeout}s.")
+        time.sleep(2)
+
+
+def start_vm(vmid: str) -> None:
+    run(["qm", "start", vmid])
+
+
+def get_verbose_status(vmid: str) -> Dict[str, str]:
+    r = run(["qm", "status", vmid, "--verbose"], capture=True, check=False)
+    status: Dict[str, str] = {}
+    for line in r.stdout.splitlines():
+        if ":" in line:
+            key, value = line.split(":", 1)
+            status[key.strip()] = value.strip()
+    return status
 
 
 def set_uefi(vmid: str, storage: str) -> None:

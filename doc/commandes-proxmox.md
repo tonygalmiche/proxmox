@@ -14,9 +14,11 @@ par commande.
 
 ## Console
 
+- `qm set <vmid> --serial0 socket` — ajoute une interface série virtuelle à une VM qui n'en a pas (erreur `unable to find a serial interface` sur `qm terminal`). Modification persistante dans `/etc/pve/qemu-server/<vmid>.conf` ; nécessite un **arrêt complet puis redémarrage de la VM** (un reboot depuis l'OS invité ne suffit pas). Retrait avec `qm set <vmid> --delete serial0`. Il faut aussi que l'OS invité ait `console=ttyS0` actif (GRUB) pour que la console série affiche quelque chose.
 - `qm terminal <vmid>` — console **série** dans le terminal SSH courant (copier/coller normal) ; quitter avec `Ctrl+O`. Nécessite `serial0: socket` dans la config VM et `console=ttyS0` actif côté VM — activé automatiquement par [synchroniser-vm-opennebula-vers-proxmox.sh](synchroniser-vm-opennebula-vers-proxmox.md) lors de la réinstallation de GRUB.
 - Console graphique (noVNC) : bouton "Console" dans l'interface web Proxmox — **fermer cet onglet avant d'utiliser `qm terminal`**, sinon les deux consoles se disputent le clavier/l'accès au port série.
 - `qm monitor <vmid>` — moniteur QEMU (debug bas niveau, pas un shell de la VM).
+- **`qm terminal` reste bloqué sans prompt login (Entrée ne fait rien)** — le getty série n'écoute pas dans la VM. Diagnostic via noVNC : `systemctl status serial-getty@ttyS0.service`. Si `inactive (dead)` : `systemctl enable --now serial-getty@ttyS0.service` (effet immédiat, pas de reboot). Vérifier aussi `cat /proc/cmdline | grep -o 'console=[^ ]*'` — si vide, ajouter `console=tty0 console=ttyS0,115200n8` à `GRUB_CMDLINE_LINUX_DEFAULT` dans `/etc/default/grub`, puis `update-grub` (nécessite un redémarrage complet de la VM pour s'appliquer).
 
 ## Configuration
 

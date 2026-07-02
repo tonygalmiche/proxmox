@@ -34,7 +34,7 @@ import sync as sync_mod
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.ini")
 REQUIRED_TOOLS = [
     "python3", "pvesm", "qm", "qemu-img", "qemu-nbd",
-    "sfdisk", "partprobe", "kpartx", "blkid", "blockdev",
+    "sfdisk", "sgdisk", "partprobe", "kpartx", "blkid", "blockdev",
     "rsync", "chroot", "mknod", "tune2fs", "e2fsck",
 ]
 
@@ -392,6 +392,24 @@ def _check_partition_consistency(host: str, nbd_device: str,
 
 
 # ---------------------------------------------------------------------------
+# --reinstall-grub : répare un boot BIOS cassé (GPT sans BIOS Boot Partition)
+# ---------------------------------------------------------------------------
+
+def reinstall_grub(vm_name: str, cfg) -> None:
+    pve_vm = pve.find_vm(vm_name)
+    if not pve_vm:
+        die(f"VM Proxmox '{vm_name}' introuvable.")
+
+    disks = pve.get_disks(pve_vm.vmid)
+    if not disks:
+        die(f"VM '{vm_name}' (VMID={pve_vm.vmid}) n'a aucun disque.")
+    pve_dev = pve.get_disk_path(disks[0].volume)
+
+    grub_mod.reinstall_bios_boot(pve_vm.vmid, pve_dev,
+                                 cfg.grub_nbd_device, cfg.dst_mount_base)
+
+
+# ---------------------------------------------------------------------------
 # Point d'entrée
 # ---------------------------------------------------------------------------
 
@@ -407,10 +425,14 @@ def main() -> None:
                         help="Premier passage : recrée partitions + filesystems + rsync + GRUB")
     parser.add_argument("--rsync", action="store_true",
                         help="Passages suivants : rsync uniquement")
+    parser.add_argument("--reinstall-grub", action="store_true",
+                        help="Répare un boot BIOS cassé (ajoute une partition "
+                             "BIOS Boot ef02 si besoin) et réinstalle GRUB")
     args = parser.parse_args()
 
-    if not (args.create or args.init or args.rsync):
-        parser.error("Au moins une option parmi --create, --init, --rsync est requise.")
+    if not (args.create or args.init or args.rsync or args.reinstall_grub):
+        parser.error("Au moins une option parmi --create, --init, --rsync, "
+                     "--reinstall-grub est requise.")
 
     check_root()
     check_tools()
@@ -429,6 +451,9 @@ def main() -> None:
                 print("Annulé.")
                 sys.exit(0)
         sync_vm(args.vm_name, cfg, init=args.init)
+
+    if args.reinstall_grub:
+        reinstall_grub(args.vm_name, cfg)
 
 
 if __name__ == "__main__":

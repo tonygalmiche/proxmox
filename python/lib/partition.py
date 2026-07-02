@@ -6,9 +6,12 @@ kpartx, et compare les tables source/destination avant toute copie.
 """
 import re
 import time
-from typing import List
+from typing import List, Optional, Tuple
 
 from run import run, ssh
+
+# Espace minimal (secteurs) pour accueillir une partition BIOS Boot (ef02).
+_MIN_BIOS_BOOT_SECTORS = 64
 
 
 def apply_table(device: str, sfdisk_dump: str) -> None:
@@ -71,6 +74,45 @@ def get_size(device: str) -> int:
 
 def get_remote_size(host: str, device: str) -> int:
     return int(ssh(host, f"blockdev --getsize64 {device}", capture=True).stdout.strip())
+
+
+def find_bios_boot_gap(device: str) -> Optional[Tuple[int, int]]:
+    """Cherche l'espace libre entre le header GPT (secteur 34) et la 1re
+    partition, pour y créer une partition BIOS Boot (ef02) sans toucher
+    aux partitions existantes. Retourne (start, end) ou None si le disque
+    n'est pas en GPT, a déjà une ef02, ou n'a pas assez de place."""
+    dump = get_local_dump(device)
+    if "label: gpt" not in dump:
+        return None
+    if re.search(r'type=\s*21686148-6449-6[Ee]6[Ff]-744[Ee]-656564454649', dump):
+        return None  # BIOS Boot Partition déjà présente
+
+    first_start = None
+    for line in dump.splitlines():
+        if not line.startswith("/dev/"):
+            continue
+        m = re.search(r'\bstart=\s*(\d+)', line)
+        if m:
+            start = int(m.group(1))
+            if first_start is None or start < first_start:
+                first_start = start
+
+    if first_start is None:
+        return None
+
+    gap_start = 34
+    gap_end = first_start - 1
+    if gap_end - gap_start + 1 < _MIN_BIOS_BOOT_SECTORS:
+        return None
+    return (gap_start, gap_end)
+
+
+def add_bios_boot_partition(device: str, start: int, end: int) -> None:
+    """Ajoute une partition BIOS Boot (ef02) sur l'espace libre [start, end]."""
+    run(["sgdisk", f"--new=0:{start}:{end}", "--typecode=0:ef02",
+         "--change-name=0:BIOS boot partition", device])
+    run(["partprobe", device], check=False)
+    time.sleep(1)
 
 
 def flush(device: str, partitions: List[str]) -> None:

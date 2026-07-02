@@ -12,7 +12,13 @@ d'origine (même octets, deux chemins), ce qui déclencherait "unknown filesyste
 import glob
 import os
 import re
+import time
+from typing import Dict, Optional, Tuple
 
+import nbd as nbd_mod
+import partition as part
+import proxmox as pve
+from filesystem import mount_local
 from run import run
 
 
@@ -98,6 +104,103 @@ def install_bios(grub_mnt: str, grub_nbd: str, root_uuid: str) -> None:
             f.write(cfg)
 
     _teardown(grub_mnt, grub_nbd)
+
+
+def reinstall_bios_boot(vmid: str, pve_dev: str, grub_nbd: str, dst_mount_base: str) -> None:
+    """Répare un boot BIOS cassé : ajoute une partition BIOS Boot (ef02) si
+    le disque est en GPT sans espace d'embedding, puis réinstalle GRUB.
+    Démarre/vérifie la VM si elle tournait avant l'appel."""
+    was_running = pve.get_status(vmid) == "running"
+    if was_running:
+        print(f"  Arrêt de la VM {vmid}...")
+        pve.stop_vm(vmid)
+
+    gap = part.find_bios_boot_gap(pve_dev)
+    if gap:
+        print(f"  Ajout d'une partition BIOS Boot (ef02) sur {pve_dev} "
+              f"[secteurs {gap[0]}:{gap[1]}]")
+        part.add_bios_boot_partition(pve_dev, gap[0], gap[1])
+    else:
+        print(f"  Aucune partition BIOS Boot à ajouter sur {pve_dev} "
+              f"(déjà présente, disque non-GPT, ou pas assez de place).")
+
+    nbd_mod.local_connect(grub_nbd, pve_dev)
+    try:
+        grub_root_dev, root_uuid = _find_root_partition(grub_nbd)
+        if not grub_root_dev:
+            raise RuntimeError(
+                f"Partition racine introuvable sur {pve_dev} "
+                f"(aucune partition avec /etc/fstab)."
+            )
+
+        grub_mnt = f"{dst_mount_base}/grub-fix-{vmid}"
+        mount_local(grub_root_dev, grub_mnt)
+        print(f"  Réinstallation de GRUB sur {grub_root_dev}...")
+        install_bios(grub_mnt, grub_nbd, root_uuid)
+    finally:
+        nbd_mod.local_disconnect(grub_nbd)
+
+    if was_running:
+        print(f"  Démarrage de la VM {vmid}...")
+        pve.start_vm(vmid)
+        _verify_boot(vmid)
+    else:
+        print(f"  VM {vmid} laissée arrêtée (elle était arrêtée avant la réparation).")
+
+
+def _find_root_partition(nbd_device: str) -> Tuple[Optional[str], Optional[str]]:
+    """Trouve, parmi les partitions du device NBD, celle qui contient /etc/fstab.
+    Retourne (device, uuid) ou (None, None)."""
+    probe_mnt = "/mnt/_grubfix_probe"
+    os.makedirs(probe_mnt, exist_ok=True)
+
+    for part_dev in sorted(glob.glob(f"{nbd_device}p*")):
+        fstype = run(["blkid", "-o", "value", "-s", "TYPE", part_dev],
+                     capture=True, check=False).stdout.strip()
+        if fstype not in ("ext2", "ext3", "ext4", "xfs"):
+            continue
+
+        run(["mount", "-o", "ro", part_dev, probe_mnt], check=False)
+        is_root = os.path.exists(os.path.join(probe_mnt, "etc/fstab"))
+        run(["umount", probe_mnt], check=False)
+
+        if is_root:
+            uuid = run(["blkid", "-o", "value", "-s", "UUID", part_dev],
+                      capture=True).stdout.strip()
+            return part_dev, uuid
+
+    return None, None
+
+
+def _verify_boot(vmid: str, timeout: int = 30, interval: int = 5) -> None:
+    """Surveille cpu/mem de la VM après démarrage pour détecter une boucle
+    de boot cassé (CPU bloqué à ~100%, RAM qui ne monte jamais)."""
+    print(f"  Vérification du boot (jusqu'à {timeout}s)...")
+    start = time.time()
+    samples = []
+    while time.time() - start < timeout:
+        time.sleep(interval)
+        status = pve.get_verbose_status(vmid)
+        try:
+            cpu = float(status.get("cpu", 0))
+            mem = int(status.get("mem", 0))
+        except ValueError:
+            continue
+        samples.append((cpu, mem))
+        print(f"    t+{int(time.time() - start)}s : "
+              f"cpu={cpu * 100:.1f}%  mem={mem // (1024 * 1024)}MiB")
+
+    if not samples:
+        print("  Impossible de vérifier l'état de la VM (pas de données).")
+        return
+
+    last_cpu, last_mem = samples[-1]
+    if last_cpu > 0.8 and last_mem < 200 * 1024 * 1024:
+        print("  ⚠️  La VM semble toujours bloquée au boot "
+              "(CPU élevé, peu de RAM utilisée). Vérifiez la console.")
+    else:
+        print("  ✅ La VM semble démarrer normalement "
+              "(CPU redescendu et/ou RAM en hausse).")
 
 
 def _teardown(grub_mnt: str, grub_nbd: str) -> None:
