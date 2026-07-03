@@ -84,6 +84,13 @@ def _find_shared_volume(disk) -> str | None:
         return None
     owner_pve_vm = pve.find_vm(disk.owner_vm_name)
     if not owner_pve_vm:
+        # OpenNebula suffixe parfois le nom par "-<vm_id>" (ex: vm-rsync-228)
+        # alors que la VM a été créée sur Proxmox sous le nom court
+        # (vm-rsync), passé tel quel à --create par l'utilisateur.
+        m = re.match(r'^(.+)-\d+$', disk.owner_vm_name)
+        if m:
+            owner_pve_vm = pve.find_vm(m.group(1))
+    if not owner_pve_vm:
         return None
     owner_disks = pve.get_disks(owner_pve_vm.vmid)
     match = next((d for d in owner_disks if d.slot == f"scsi{disk.owner_disk_id}"), None)
