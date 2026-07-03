@@ -8,6 +8,9 @@ import re
 import time
 from typing import List, Optional, Tuple
 
+import nbd as nbd_mod
+import opennebula as on_mod
+import proxmox as pve
 from run import run, ssh
 
 # Espace minimal (secteurs) pour accueillir une partition BIOS Boot (ef02).
@@ -161,6 +164,106 @@ def strip_bios_boot(dump: str) -> str:
         line for line in dump.splitlines()
         if not (line.startswith("/dev/") and _BIOS_BOOT_TYPE_RE.search(line))
     )
+
+
+def check_consistency(host: str, nbd_device: str, sfdisk_dump: str,
+                      src_parts: List[str], pve_dev: str,
+                      dst_parts: List[str]) -> Tuple[bool, bool, bool, str]:
+    """Compare les tables de partitions source/destination sans jamais rien
+    modifier. Retourne (has_table_src, has_table_dst, ok, détail)."""
+    has_table_src = len(src_parts) > 1 or src_parts[0] != nbd_device
+    has_table_dst = dst_parts[0] != pve_dev
+
+    if len(src_parts) != len(dst_parts):
+        return has_table_src, has_table_dst, False, (
+            f"nombre de partitions différent (source={len(src_parts)}, "
+            f"destination={len(dst_parts)})"
+        )
+
+    if has_table_src != has_table_dst:
+        return has_table_src, has_table_dst, False, (
+            "table de partitions présente d'un seul côté "
+            f"(source={'oui' if has_table_src else 'non'}, "
+            f"destination={'oui' if has_table_dst else 'non'})"
+        )
+
+    if has_table_src:
+        dst_dump = strip_bios_boot(get_local_dump(pve_dev))
+        if normalize(sfdisk_dump) != normalize(dst_dump):
+            return has_table_src, has_table_dst, False, "tables de partitions différentes"
+        return has_table_src, has_table_dst, True, "table de partitions identique"
+
+    src_size = get_remote_size(host, nbd_device)
+    dst_size = get_size(pve_dev)
+    if src_size != dst_size:
+        return has_table_src, has_table_dst, False, (
+            f"pas de table des deux côtés mais tailles différentes "
+            f"(source={src_size}, destination={dst_size})"
+        )
+    return has_table_src, has_table_dst, True, "pas de table de partitions (disque brut), taille identique"
+
+
+def diagnose_disk(host: str, source: str, nbd_device: str, pve_dev: str,
+                  mount_base: str) -> Tuple[bool, bool, bool, str]:
+    """État en lecture seule d'un disque : connecte la source en NBD
+    read-only, ajoute/retire un mapping kpartx destination (réversible,
+    n'applique aucune table ni mkfs), et retourne
+    (has_table_src, has_table_dst, ok, détail)."""
+    sfdisk_dump, src_parts = nbd_mod.remote_connect(host, source, nbd_device, mount_base)
+    try:
+        dst_parts = kpartx_add(pve_dev)
+        bios_boot_nums = bios_boot_partition_numbers(pve_dev)
+        if bios_boot_nums:
+            dst_parts = [p for p in dst_parts
+                        if not (m := re.search(r'\d+$', p))
+                        or int(m.group()) not in bios_boot_nums]
+        return check_consistency(host, nbd_device, sfdisk_dump, src_parts, pve_dev, dst_parts)
+    finally:
+        kpartx_remove(pve_dev)
+        nbd_mod.remote_disconnect(host, nbd_device, mount_base)
+
+
+def print_disks_state(vm_name: str, cfg) -> None:
+    """Affiche pour chaque disque de la VM si sa table de partitions Proxmox
+    correspond à la source OpenNebula, ou s'il faut le réinitialiser
+    (--init-disk DISK_ID). Purement diagnostique : voir diagnose_disk()."""
+    on_vm = on_mod.find_vm(cfg.opennebula_host, vm_name)
+
+    pve_vm = pve.find_vm(vm_name)
+    if not pve_vm:
+        raise RuntimeError(f"VM Proxmox '{vm_name}' introuvable. Lancez d'abord --create.")
+
+    pve_disks = pve.get_disks(pve_vm.vmid)
+    if len(pve_disks) != len(on_vm.disks):
+        raise RuntimeError(f"nombre de disques différent : OpenNebula={len(on_vm.disks)}, "
+                           f"Proxmox={len(pve_disks)}.")
+
+    print(f"VM '{vm_name}' : OpenNebula ID={on_vm.vm_id} ↔ Proxmox VMID={pve_vm.vmid} "
+          f"— état des {len(on_vm.disks)} disque(s)\n")
+    print(f"{'DISK':<6} {'TABLE SRC':<11} {'TABLE DST':<11} {'À INITIALISER':<15} DÉTAIL")
+
+    to_init = []
+    for idx, (on_disk, pve_disk) in enumerate(zip(on_vm.disks, pve_disks)):
+        nbd_device = nbd_mod.pick_device(cfg.nbd_device, idx)
+        pve_dev = pve.get_disk_path(pve_disk.volume)
+        try:
+            has_table_src, has_table_dst, ok, detail = diagnose_disk(
+                cfg.opennebula_host, on_disk.source, nbd_device, pve_dev, cfg.src_mount_base
+            )
+        except Exception as exc:
+            has_table_src, has_table_dst, ok, detail = False, False, False, f"erreur : {exc}"
+
+        needs_init = not ok
+        print(f"{on_disk.disk_id:<6} {'oui' if has_table_src else 'non':<11} "
+              f"{'oui' if has_table_dst else 'non':<11} {'OUI' if needs_init else 'non':<15} {detail}")
+        if needs_init:
+            to_init.append(on_disk.disk_id)
+
+    if to_init:
+        flags = " ".join(f"--init-disk {i}" for i in to_init)
+        print(f"\nDisque(s) à réinitialiser : {flags}")
+    else:
+        print("\nTous les disques sont cohérents, aucun --init-disk nécessaire.")
 
 
 def flush(device: str, partitions: List[str]) -> None:

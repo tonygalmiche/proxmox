@@ -105,7 +105,7 @@ def create_vm(vm_name: str, cfg) -> None:
 # --init / --rsync : synchronisation des disques
 # ---------------------------------------------------------------------------
 
-def sync_vm(vm_name: str, cfg, init: bool) -> None:
+def sync_vm(vm_name: str, cfg, init: bool, init_disk_ids: frozenset = frozenset()) -> None:
     on_vm = on_mod.find_vm(cfg.opennebula_host, vm_name)
     if not on_vm.is_stopped():
         die(f"la VM '{on_vm.name}' n'est pas arrêtée sur OpenNebula (état={on_vm.state}).")
@@ -144,8 +144,9 @@ def sync_vm(vm_name: str, cfg, init: bool) -> None:
 
     for idx, (on_disk, pve_disk) in enumerate(zip(on_vm.disks, pve_disks)):
         nbd_device = nbd_mod.pick_device(cfg.nbd_device, idx)
+        disk_init = init or on_disk.disk_id in init_disk_ids
         _migrate_disk(on_disk.disk_id, on_disk.source,
-                      pve_disk.volume, pve_vm.vmid, cfg, init, cleanup,
+                      pve_disk.volume, pve_vm.vmid, cfg, disk_init, cleanup,
                       nbd_device)
 
     elapsed = int(time.time() - start)
@@ -389,34 +390,15 @@ def _post_sync(disk_id: int, pve_dev: str, proxmox_vmid: str, cfg,
 def _check_partition_consistency(host: str, nbd_device: str,
                                  sfdisk_dump: str, src_parts: list,
                                  pve_dev: str, dst_parts: list) -> None:
-    if len(src_parts) != len(dst_parts):
+    _, _, ok, detail = part.check_consistency(
+        host, nbd_device, sfdisk_dump, src_parts, pve_dev, dst_parts
+    )
+    if not ok:
         raise RuntimeError(
-            f"Nombre de partitions différent : source={len(src_parts)}, "
-            f"destination={len(dst_parts)}."
+            f"Présence d'une table de partitions différente entre source et "
+            f"destination : {detail}.\n"
+            f"Relancez avec --init (ou --init-disk pour ce seul disque) pour la recréer."
         )
-
-    has_table_src = len(src_parts) > 1 or src_parts[0] != nbd_device
-    has_table_dst = dst_parts[0] != pve_dev
-
-    if has_table_src != has_table_dst:
-        raise RuntimeError("Présence d'une table de partitions différente entre source et destination.")
-
-    if has_table_src:
-        dst_dump = part.strip_bios_boot(part.get_local_dump(pve_dev))
-        if part.normalize(sfdisk_dump) != part.normalize(dst_dump):
-            raise RuntimeError(
-                f"Table de partitions source ≠ destination.\n"
-                f"  Source      : {part.normalize(sfdisk_dump)}\n"
-                f"  Destination : {part.normalize(dst_dump)}\n"
-                f"Relancez avec --init pour la recréer."
-            )
-    else:
-        src_size = part.get_remote_size(host, nbd_device)
-        dst_size = part.get_size(pve_dev)
-        if src_size != dst_size:
-            raise RuntimeError(
-                f"Taille de disque différente : source={src_size}, destination={dst_size}."
-            )
 
 
 # ---------------------------------------------------------------------------
@@ -456,11 +438,22 @@ def main() -> None:
     parser.add_argument("--reinstall-grub", action="store_true",
                         help="Répare un boot BIOS cassé (ajoute une partition "
                              "BIOS Boot ef02 si besoin) et réinstalle GRUB")
+    parser.add_argument("--init-disk", type=int, action="append", metavar="DISK_ID",
+                        help="Recrée la table de partitions + filesystems du disque "
+                             "DISK_ID uniquement (les autres disques ne sont pas "
+                             "touchés). Cumulable, répétable. À utiliser avec --rsync "
+                             "quand un disque précis n'a jamais été initialisé "
+                             "(ex : un --init précédent interrompu avant ce disque) "
+                             "sans avoir à tout refaire.")
+    parser.add_argument("--state-disk", action="store_true",
+                        help="Diagnostic en lecture seule : liste les disques et "
+                             "indique lesquels ont besoin de --init-disk.")
     args = parser.parse_args()
 
-    if not (args.create or args.init or args.rsync or args.reinstall_grub):
+    if not (args.create or args.init or args.rsync or args.reinstall_grub
+            or args.init_disk or args.state_disk):
         parser.error("Au moins une option parmi --create, --init, --rsync, "
-                     "--reinstall-grub est requise.")
+                     "--reinstall-grub, --init-disk, --state-disk est requise.")
 
     check_root()
     check_tools()
@@ -470,15 +463,28 @@ def main() -> None:
     if args.create:
         create_vm(args.vm_name, cfg)
 
-    if args.init or args.rsync:
+    if args.state_disk:
+        try:
+            part.print_disks_state(args.vm_name, cfg)
+        except RuntimeError as exc:
+            die(str(exc))
+
+    init_disk_ids = frozenset(args.init_disk or ())
+
+    if args.init or args.rsync or init_disk_ids:
         if args.init:
             print(f"⚠️  --init va recréer les tables de partitions et filesystems "
                   f"sur les disques Proxmox de '{args.vm_name}'.")
+        if init_disk_ids:
+            print(f"⚠️  --init-disk va recréer la table de partitions et les "
+                  f"filesystems du/des disque(s) {sorted(init_disk_ids)} de "
+                  f"'{args.vm_name}' (les autres disques ne sont pas touchés).")
+        if args.init or init_disk_ids:
             answer = input("Confirmer ? (oui/non) : ").strip()
             if answer != "oui":
                 print("Annulé.")
                 sys.exit(0)
-        sync_vm(args.vm_name, cfg, init=args.init)
+        sync_vm(args.vm_name, cfg, init=args.init, init_disk_ids=init_disk_ids)
 
     if args.reinstall_grub:
         reinstall_grub(args.vm_name, cfg)

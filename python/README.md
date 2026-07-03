@@ -49,7 +49,21 @@ dst_mount_base  = /mnt/proxmox-sync-dst
 
 # Tout en une commande :
 ./migrer-vm-opennebula-vers-proxmox.py vm-glpi-bookworm --create --init
+
+# Diagnostic en lecture seule : état de chaque disque (table de partitions
+# source vs destination), pour savoir lesquels ont besoin d'un --init-disk
+./migrer-vm-opennebula-vers-proxmox.py vm-glpi-bookworm --state-disk
+
+# Réinitialise un seul disque (table + filesystems) sans toucher aux autres,
+# ex. quand un --init précédent a été interrompu avant ce disque
+./migrer-vm-opennebula-vers-proxmox.py vm-glpi-bookworm --init-disk 2
+
+# Répare un boot BIOS cassé (ajoute une partition BIOS Boot ef02 si besoin)
+./migrer-vm-opennebula-vers-proxmox.py vm-glpi-bookworm --reinstall-grub
 ```
+
+`--init` et `--init-disk` demandent une confirmation explicite (`oui`) avant
+de recréer une table de partitions ou un filesystem.
 
 ## Structure
 
@@ -63,8 +77,11 @@ python/
     config.py       ← chargement config.ini
     opennebula.py   ← interrogation OpenNebula (onevm list/show)
     proxmox.py      ← opérations Proxmox (qm, pvesm, pvesh)
-    nbd.py          ← connexion/déconnexion NBD (source + GRUB)
-    partition.py    ← table de partitions, kpartx, comparaison
+    nbd.py          ← connexion/déconnexion NBD (source + GRUB), alterne les
+                      devices NBD source entre disques pour éviter une
+                      reconnexion immédiate sur le même device
+    partition.py    ← table de partitions, kpartx, comparaison, diagnostic
+                      --state-disk
     filesystem.py   ← mkfs, e2fsck, montage
     lvm.py          ← gestion LVM (PV/VG/LV)
     sync.py         ← rsync source → destination
