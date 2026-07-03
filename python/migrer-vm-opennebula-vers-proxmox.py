@@ -157,7 +157,10 @@ def set_description(vm_name: str, cfg) -> None:
     kind = "template" if on_vm.is_template else "instance"
     lines = [f"**OpenNebula : {on_vm.name} ({kind})**", ""]
     for on_disk, pve_disk in zip(on_vm.disks, pve_disks):
-        lines.append(f"- disk{on_disk.disk_id} : {on_disk.image} -> {pve_disk.volume}")
+        on_size = f"{mb_to_gb_ceil(on_disk.size_mb)}G"
+        pve_size = f" ({pve_disk.size})" if pve_disk.size else ""
+        lines.append(f"- disk{on_disk.disk_id} : {on_disk.image} ({on_size}) "
+                     f"-> {pve_disk.volume}{pve_size}")
 
     description = "\n".join(lines)
     pve.set_description(pve_vm.vmid, description)

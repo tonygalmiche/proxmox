@@ -23,6 +23,7 @@ class PveVm:
 class PveDisk:
     slot: str    # ex: "scsi0"
     volume: str  # ex: "local-lvm:vm-101-disk-0"
+    size: str = ""  # ex: "20G" (tel qu'affiché dans la config, "" si absent)
 
 
 def find_vm(name: str) -> Optional[PveVm]:
@@ -73,7 +74,8 @@ def get_disks(vmid: str) -> List[PveDisk]:
         if m and "media=cdrom" not in line:
             slot = m.group(1) + m.group(2)
             volume = m.group(3).split(",")[0]
-            disks.append(PveDisk(slot=slot, volume=volume))
+            size_m = re.search(r'\bsize=(\S+)', line)
+            disks.append(PveDisk(slot=slot, volume=volume, size=size_m.group(1) if size_m else ""))
     disks.sort(key=lambda d: (re.match(r'^([a-z]+)(\d+)$', d.slot).group(1),
                                int(re.match(r'^([a-z]+)(\d+)$', d.slot).group(2))))
     return disks
