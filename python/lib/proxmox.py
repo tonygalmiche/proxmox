@@ -53,6 +53,14 @@ def add_disk(vmid: str, slot_index: int, storage: str, size_gb: int) -> None:
     run(["qm", "set", vmid, f"--scsi{slot_index}", f"{storage}:{size_gb},iothread=1"])
 
 
+def attach_existing_disk(vmid: str, slot_index: int, volume: str) -> None:
+    """Attache un volume Proxmox déjà existant (ex: local-lvm:vm-115-disk-1)
+    à une autre VM, sans en créer un nouveau. Sert au partage d'un disque
+    entre deux VM qui référencent la même image persistante sur OpenNebula
+    (une seule des deux doit être démarrée à la fois, comme sur OpenNebula)."""
+    run(["qm", "set", vmid, f"--scsi{slot_index}", f"{volume},iothread=1"])
+
+
 def set_boot_disk(vmid: str) -> None:
     run(["qm", "set", vmid, "--boot", "order=scsi0"])
 
@@ -128,3 +136,9 @@ def set_uefi(vmid: str, storage: str) -> None:
 
 def set_serial(vmid: str) -> None:
     run(["qm", "set", vmid, "--serial0", "socket"], check=False)
+
+
+def set_description(vmid: str, description: str) -> None:
+    """Remplace les Notes (description) de la VM, affichées dans l'onglet
+    Summary de l'interface web."""
+    run(["qm", "set", vmid, "--description", description])

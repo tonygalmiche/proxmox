@@ -4,11 +4,29 @@ Script de migration d'une VM d'OpenNebula vers Proxmox via rsync (pas de copie b
 
 ## Fonctionnement
 
-1. Connecte l'image disque source sur OpenNebula en lecture seule via `qemu-nbd`
-2. Recopie la table de partitions sur le disque Proxmox (`--init` uniquement)
-3. Monte les deux côtés et synchronise les données avec `rsync` partition par partition
-4. Réinstalle GRUB (BIOS) ou configure le boot UEFI selon le type de VM détecté
-5. Corrige le nom d'interface réseau et active la console série `ttyS0`
+1. Trouve la VM sur OpenNebula par instance (`onevm`), ou à défaut par template
+   (`onetemplate` + `oneimage`) si elle n'a pas d'instance propre — cas d'une VM
+   dont le disque est une image persistante actuellement attachée à une autre VM
+   (ex. `vm-freedom` dont le disque de données est attaché à `vm-rsync`)
+2. Connecte l'image disque source sur OpenNebula en lecture seule via `qemu-nbd`
+3. Recopie la table de partitions sur le disque Proxmox (`--init` uniquement)
+4. Monte les deux côtés et synchronise les données avec `rsync` partition par partition
+5. Réinstalle GRUB (BIOS) ou configure le boot UEFI selon le type de VM détecté
+6. Corrige le nom d'interface réseau et active la console série `ttyS0`
+
+### Disques partagés entre plusieurs VM OpenNebula
+
+Si une image persistante OpenNebula est déjà attachée à une VM déjà migrée sur
+Proxmox (cas `vm-freedom`/`vm-rsync` ci-dessus), `--create` ne duplique pas le
+disque : il réutilise le volume Proxmox existant (ex. `local-lvm:vm-115-disk-1`)
+en l'attachant aussi à la nouvelle VM, comme sur OpenNebula où une seule des
+deux VM peut avoir l'image attachée/démarrée à la fois. **Les deux VM Proxmox
+ne doivent donc jamais être démarrées en même temps** — rien ne l'empêche
+techniquement côté Proxmox, contrairement à OpenNebula.
+
+Proxmox n'a aucun moyen natif de nommer un disque avec l'identité de son image
+OpenNebula d'origine (le plugin LVM impose le format `vm-<vmid>-disk-<n>`) :
+utiliser `--set-description` pour documenter ce lien dans les Notes de la VM.
 
 ## Prérequis
 
@@ -60,6 +78,10 @@ dst_mount_base  = /mnt/proxmox-sync-dst
 
 # Répare un boot BIOS cassé (ajoute une partition BIOS Boot ef02 si besoin)
 ./migrer-vm-opennebula-vers-proxmox.py vm-glpi-bookworm --reinstall-grub
+
+# Documente dans les Notes Proxmox le lien avec OpenNebula : nom (instance ou
+# template) puis, une ligne par disque, la correspondance image -> volume
+./migrer-vm-opennebula-vers-proxmox.py vm-glpi-bookworm --set-description
 ```
 
 `--init` et `--init-disk` demandent une confirmation explicite (`oui`) avant
@@ -75,8 +97,11 @@ python/
   lib/
     run.py          ← helpers subprocess (local + SSH)
     config.py       ← chargement config.ini
-    opennebula.py   ← interrogation OpenNebula (onevm list/show)
-    proxmox.py      ← opérations Proxmox (qm, pvesm, pvesh)
+    opennebula.py   ← interrogation OpenNebula (onevm, onetemplate, oneimage) ;
+                      bascule instance -> template et résout les images
+                      partagées entre VM
+    proxmox.py      ← opérations Proxmox (qm, pvesm, pvesh), y compris
+                      réutilisation de disque partagé et description (Notes)
     nbd.py          ← connexion/déconnexion NBD (source + GRUB), alterne les
                       devices NBD source entre disques pour éviter une
                       reconnexion immédiate sur le même device

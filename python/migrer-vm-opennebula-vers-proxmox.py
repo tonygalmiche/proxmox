@@ -74,6 +74,22 @@ def mb_to_gb_ceil(mb: int) -> int:
 # --create : crée la VM Proxmox vide d'après la config OpenNebula
 # ---------------------------------------------------------------------------
 
+def _find_shared_volume(disk) -> str | None:
+    """Si ce disque de template référence une image déjà attachée à une VM
+    OpenNebula déjà migrée sur Proxmox, retourne le volume Proxmox existant
+    à réutiliser (ex: 'local-lvm:vm-115-disk-1'). None sinon : soit le
+    disque n'est pas partagé, soit son propriétaire n'a pas encore de VM
+    Proxmox (auquel cas on doit créer un disque neuf comme d'habitude)."""
+    if not disk.owner_vm_name:
+        return None
+    owner_pve_vm = pve.find_vm(disk.owner_vm_name)
+    if not owner_pve_vm:
+        return None
+    owner_disks = pve.get_disks(owner_pve_vm.vmid)
+    match = next((d for d in owner_disks if d.slot == f"scsi{disk.owner_disk_id}"), None)
+    return match.volume if match else None
+
+
 def create_vm(vm_name: str, cfg) -> None:
     on_vm = on_mod.find_vm_or_template(cfg.opennebula_host, vm_name)
 
@@ -89,16 +105,53 @@ def create_vm(vm_name: str, cfg) -> None:
     pve.create_vm(vmid, vm_name, on_vm.memory_mb, on_vm.vcpu, cfg.proxmox_bridge)
 
     print(f"{'VM':<30} {'ON_ID':<8} {'VCPU':<6} {'RAM(Mo)':<10} "
-          f"{'VMID':<8} {'DISK':<6} {'IMAGE':<30} {'ON(Mo)':<10} {'PVE(Go)'}")
+          f"{'VMID':<8} {'DISK':<6} {'IMAGE':<30} {'ON(Mo)':<10} {'PVE'}")
     for disk in on_vm.disks:
-        size_gb = mb_to_gb_ceil(disk.size_mb)
-        pve.add_disk(vmid, disk.disk_id, cfg.proxmox_storage, size_gb)
+        reused_volume = _find_shared_volume(disk)
+        if reused_volume:
+            pve.attach_existing_disk(vmid, disk.disk_id, reused_volume)
+            pve_col = f"{reused_volume} (partagé avec '{disk.owner_vm_name}')"
+        else:
+            size_gb = mb_to_gb_ceil(disk.size_mb)
+            pve.add_disk(vmid, disk.disk_id, cfg.proxmox_storage, size_gb)
+            pve_col = f"{size_gb}G (nouveau)"
         print(f"{vm_name:<30} {on_vm.vm_id:<8} {on_vm.vcpu:<6} {on_vm.memory_mb:<10} "
-              f"{vmid:<8} {disk.disk_id:<6} {disk.image:<30} {disk.size_mb:<10} {size_gb}")
+              f"{vmid:<8} {disk.disk_id:<6} {disk.image:<30} {disk.size_mb:<10} {pve_col}")
 
     pve.set_boot_disk(vmid)
     pve.set_serial(vmid)
     print(f"VM '{vm_name}' créée sur Proxmox (VMID={vmid}).")
+
+
+# ---------------------------------------------------------------------------
+# --set-description : documente le lien OpenNebula -> Proxmox dans les Notes
+# ---------------------------------------------------------------------------
+
+def set_description(vm_name: str, cfg) -> None:
+    """Renseigne les Notes de la VM Proxmox : nom OpenNebula (instance ou
+    template) puis, une ligne par disque dans l'ordre, la correspondance
+    image OpenNebula -> volume Proxmox. Utile car Proxmox n'a aucun moyen
+    natif de nommer un disque avec l'identité de son image OpenNebula
+    d'origine (cf. contrainte de nommage vm-<vmid>-disk-<n> du plugin LVM)."""
+    on_vm = on_mod.find_vm_or_template(cfg.opennebula_host, vm_name)
+
+    pve_vm = pve.find_vm(vm_name)
+    if not pve_vm:
+        die(f"VM Proxmox '{vm_name}' introuvable. Lancez d'abord --create.")
+
+    pve_disks = pve.get_disks(pve_vm.vmid)
+    if len(pve_disks) != len(on_vm.disks):
+        die(f"nombre de disques différent : OpenNebula={len(on_vm.disks)}, "
+            f"Proxmox={len(pve_disks)}.")
+
+    kind = "template" if on_vm.is_template else "instance"
+    lines = [f"OpenNebula : {on_vm.name} ({kind})"]
+    for on_disk, pve_disk in zip(on_vm.disks, pve_disks):
+        lines.append(f"disk{on_disk.disk_id} : {on_disk.image} -> {pve_disk.volume}")
+
+    description = "\n".join(lines)
+    pve.set_description(pve_vm.vmid, description)
+    print(f"Description mise à jour pour '{vm_name}' (VMID={pve_vm.vmid}) :\n{description}")
 
 
 # ---------------------------------------------------------------------------
@@ -448,12 +501,18 @@ def main() -> None:
     parser.add_argument("--state-disk", action="store_true",
                         help="Diagnostic en lecture seule : liste les disques et "
                              "indique lesquels ont besoin de --init-disk.")
+    parser.add_argument("--set-description", action="store_true",
+                        help="Renseigne les Notes de la VM Proxmox : nom OpenNebula "
+                             "(instance ou template) puis, une ligne par disque dans "
+                             "l'ordre, la correspondance image OpenNebula -> volume "
+                             "Proxmox.")
     args = parser.parse_args()
 
     if not (args.create or args.init or args.rsync or args.reinstall_grub
-            or args.init_disk or args.state_disk):
+            or args.init_disk or args.state_disk or args.set_description):
         parser.error("Au moins une option parmi --create, --init, --rsync, "
-                     "--reinstall-grub, --init-disk, --state-disk est requise.")
+                     "--reinstall-grub, --init-disk, --state-disk, "
+                     "--set-description est requise.")
 
     check_root()
     check_tools()
@@ -488,6 +547,9 @@ def main() -> None:
 
     if args.reinstall_grub:
         reinstall_grub(args.vm_name, cfg)
+
+    if args.set_description:
+        set_description(args.vm_name, cfg)
 
 
 if __name__ == "__main__":

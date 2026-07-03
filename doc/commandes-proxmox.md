@@ -31,7 +31,14 @@ par commande.
 
 - `pvesh get /cluster/nextid` — prochain VMID libre.
 - `pvesm path <storage:volume>` — résout un volume (ex. `local-lvm:vm-104-disk-0`) en chemin bloc réel (ex. `/dev/pve/vm-104-disk-0`).
-- `pvesm status` — liste les storages configurés et leur espace libre.
+- `pvesm status` — liste les storages configurés (type, espace libre/total).
+- `pvesm list <storage>` — liste tous les volumes d'un storage (ex. `local-lvm`) : nom, VMID propriétaire, format, taille. Équivalent CLI de l'onglet "Contenu du disque" d'un storage dans l'interface web.
+- `qm config <vmid> | grep -E 'scsi|virtio|ide|sata'` — liste les disques d'une VM précise (slot, storage:volume, taille, options).
+
+### `raw` vs `qcow2`
+
+- **LVM/LVM-thin** (ex. `local-lvm`) ne supporte que `raw` : une LV est un volume bloc brut, sans notion de format de fichier. C'est aussi le format le plus performant (pas de table d'allocation à consulter comme dans `qcow2`, donc moins de latence/CPU par I/O) — normal et recommandé pour ce type de storage, rien à changer.
+- `qcow2` n'a d'intérêt que sur un storage **fichier** (`dir`, NFS) qui n'a pas nativement de thin-provisioning/snapshot : `qcow2` apporte ces fonctionnalités au niveau du fichier. Sur LVM-thin ou ZFS, ces fonctionnalités existent déjà au niveau du storage — empiler `qcow2` par-dessus serait redondant et plus lent.
 
 ## Réseau
 

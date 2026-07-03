@@ -15,7 +15,7 @@ réels sont alors résolus via `oneimage show`.
 import math
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Optional
 
 from run import ssh
 
@@ -29,6 +29,12 @@ class OnDisk:
     image: str
     source: str
     size_mb: int
+    # Renseigné uniquement pour un disque de template dont l'image est une
+    # image persistante actuellement attachée à une autre VM onevm déjà
+    # migrée (ex: vm-freedom-samba détenue par vm-rsync). Permet à --create
+    # de réutiliser le disque Proxmox existant plutôt que d'en dupliquer un.
+    owner_vm_name: Optional[str] = None
+    owner_disk_id: Optional[int] = None
 
 
 @dataclass
@@ -155,8 +161,10 @@ def _parse_template(host: str, xml_str: str, tmpl_id: str, tmpl_name: str) -> On
         if not image_name:
             continue
         source, size_mb, vm_ids = _resolve_image(host, image_name)
-        _check_image_available(host, image_name, vm_ids)
-        disks.append(OnDisk(disk_id=idx, image=image_name, source=source, size_mb=size_mb))
+        owner = _locate_image_owner(host, image_name, vm_ids)
+        owner_vm_name, owner_disk_id = owner if owner else (None, None)
+        disks.append(OnDisk(disk_id=idx, image=image_name, source=source, size_mb=size_mb,
+                            owner_vm_name=owner_vm_name, owner_disk_id=owner_disk_id))
 
     return OnVm(vm_id=f"tmpl-{tmpl_id}", name=tmpl_name, state="",
                 vcpu=vcpu, memory_mb=memory_mb, disks=disks, is_template=True)
@@ -173,10 +181,13 @@ def _resolve_image(host: str, image_name: str):
     return source, size_mb, vm_ids
 
 
-def _check_image_available(host: str, image_name: str, vm_ids: List[str]) -> None:
-    """Une image persistante référencée par un template n'est lisible en
-    toute sécurité que si aucune VM qui la détient actuellement n'est
-    démarrée (sinon on risque de lire un disque en cours d'écriture)."""
+def _locate_image_owner(host: str, image_name: str,
+                        vm_ids: List[str]) -> Optional[tuple]:
+    """Vérifie qu'aucune VM détenant actuellement cette image persistante
+    n'est démarrée (sinon on risque de lire un disque en cours d'écriture),
+    et retourne (nom_vm, disk_id) de la VM qui la détient, pour que --create
+    puisse réutiliser son disque Proxmox au lieu d'en créer un nouveau.
+    None si l'image n'est détenue par aucune VM (jamais migrée nulle part)."""
     for vm_id in vm_ids:
         r = ssh(host, f"onevm show {vm_id} -x", capture=True, check=False)
         if r.returncode != 0:
@@ -190,3 +201,8 @@ def _check_image_available(host: str, image_name: str, vm_ids: List[str]) -> Non
                 f"qui n'est pas arrêtée (état={vstate}) — synchronisation bloquée "
                 f"pour éviter de lire un disque en cours d'écriture."
             )
+        vtmpl = vroot.find("TEMPLATE") or ET.Element("TEMPLATE")
+        for d in vtmpl.findall("DISK"):
+            if d.findtext("IMAGE", "") == image_name:
+                return vname, int(d.findtext("DISK_ID", "0"))
+    return None
