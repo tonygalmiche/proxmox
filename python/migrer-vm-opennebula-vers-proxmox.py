@@ -151,10 +151,13 @@ def set_description(vm_name: str, cfg) -> None:
         die(f"nombre de disques différent : OpenNebula={len(on_vm.disks)}, "
             f"Proxmox={len(pve_disks)}.")
 
+    # Les Notes Proxmox sont rendues en Markdown : un simple "\n" ne crée pas
+    # de saut de ligne visuel (il en faudrait deux, ou une liste). On utilise
+    # une liste à puces pour que chaque disque s'affiche sur sa propre ligne.
     kind = "template" if on_vm.is_template else "instance"
-    lines = [f"OpenNebula : {on_vm.name} ({kind})"]
+    lines = [f"**OpenNebula : {on_vm.name} ({kind})**", ""]
     for on_disk, pve_disk in zip(on_vm.disks, pve_disks):
-        lines.append(f"disk{on_disk.disk_id} : {on_disk.image} -> {pve_disk.volume}")
+        lines.append(f"- disk{on_disk.disk_id} : {on_disk.image} -> {pve_disk.volume}")
 
     description = "\n".join(lines)
     pve.set_description(pve_vm.vmid, description)
