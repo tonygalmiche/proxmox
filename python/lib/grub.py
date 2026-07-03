@@ -86,13 +86,25 @@ def install_bios(grub_mnt: str, grub_nbd: str, root_uuid: str) -> None:
     for fs in ("proc", "sys"):
         run(["mount", "--bind", f"/{fs}", f"{grub_mnt}/{fs}"])
 
-    for cmd in (
-        ["chroot", grub_mnt, "grub-install", "--target=i386-pc", grub_nbd],
-        ["chroot", grub_mnt, "update-grub"],
-    ):
-        r = run(cmd, capture=True, check=False)
-        if r.returncode != 0:
-            print(f"  Attention : {cmd[2]} échoué:\n{r.stdout}{r.stderr}")
+    grub_install = ["chroot", grub_mnt, "grub-install", "--target=i386-pc", grub_nbd]
+    r = run(grub_install, capture=True, check=False)
+    if r.returncode != 0 and "embedding area is unusually small" in (r.stdout + r.stderr):
+        # Table de partitions héritée de la source OpenNebula avec une 1re
+        # partition démarrant très tôt (ex: secteur 2 au lieu de 2048), sans
+        # espace pour embarquer core.img. Corriger proprement demanderait de
+        # déplacer physiquement toute la partition (sfdisk --move-data),
+        # coûteux sur un gros disque : on installe via blocklists (--force),
+        # fiable tant que le filesystem ne déplace pas ces secteurs (cas
+        # normal hors défragmentation).
+        print("  Espace d'embedding insuffisant (table de partitions héritée de "
+              "la source) : nouvelle tentative avec grub-install --force (blocklists).")
+        r = run(grub_install + ["--force"], capture=True, check=False)
+    if r.returncode != 0:
+        print(f"  Attention : grub-install échoué:\n{r.stdout}{r.stderr}")
+
+    r = run(["chroot", grub_mnt, "update-grub"], capture=True, check=False)
+    if r.returncode != 0:
+        print(f"  Attention : update-grub échoué:\n{r.stdout}{r.stderr}")
 
     # Corrige grub.cfg si update-grub a écrit le chemin NBD temporaire
     grub_cfg = os.path.join(grub_mnt, "boot/grub/grub.cfg")
