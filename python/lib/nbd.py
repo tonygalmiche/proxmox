@@ -5,6 +5,7 @@ remote_connect() renvoie le dump sfdisk et la liste des partitions.
 Nettoie systématiquement les résidus des runs précédents avant de se connecter
 (PV UUID en double, mappings kpartx stales, zombie NBD).
 """
+import re
 import time
 from typing import Tuple, List
 
@@ -48,7 +49,7 @@ sleep 1
 
 # Nettoyage global APRÈS déconnexion : plus de risque I/O sur notre NBD.
 vgchange -an 2>/dev/null || true
-for n in /dev/nbd0 /dev/nbd1 /dev/nbd2 /dev/nbd3 /dev/nbd4 /dev/nbd5; do
+for n in /dev/nbd0 /dev/nbd1 /dev/nbd2 /dev/nbd3 /dev/nbd4 /dev/nbd5 /dev/nbd6 /dev/nbd7 /dev/nbd8 /dev/nbd9; do
     [ "$n" != "$NBD" ] && [ -b "$n" ] && kpartx -d "$n" >/dev/null 2>&1 || true
 done
 sleep 1
@@ -73,7 +74,20 @@ if [ "$CONNECTED" -eq 0 ]; then
     exit 1
 fi
 
-SFDISK_DUMP=$(sfdisk -d "$NBD" 2>/dev/null || true)
+# Même une fois blockdev --getsize64 > 0, sfdisk peut encore échouer (I/O
+# error transitoire) juste après une reconnexion NBD qui suit un disconnect
+# ayant flushé l'ancien device (cf. commentaire plus haut). Sans retry, un
+# échec silencieux (masqué par || true) faisait croire à tort qu'il n'y a
+# pas de table de partitions sur la source, ce qui déclenche une fausse
+# RuntimeError "table de partitions différente" côté script principal.
+SFDISK_DUMP=""
+for i in 1 2 3 4 5; do
+    if SFDISK_DUMP=$(sfdisk -d "$NBD" 2>/dev/null); then
+        break
+    fi
+    SFDISK_DUMP=""
+    sleep 1
+done
 echo "__SFDISK_START__"
 echo "$SFDISK_DUMP"
 echo "__SFDISK_END__"
@@ -130,3 +144,21 @@ def remote_connect(host: str, source: str, nbd_device: str,
 
 def remote_disconnect(host: str, nbd_device: str, mount_base: str) -> None:
     ssh_script(host, _DISCONNECT_SCRIPT, nbd_device, mount_base, check=False)
+
+
+def pick_device(base_device: str, index: int, pool_size: int = 2) -> str:
+    """Alterne entre `pool_size` devices NBD distants pour un disque donné
+    (par son index dans la VM), au lieu de toujours reconnecter le même.
+
+    Reconnecter immédiatement le même device juste après l'avoir déconnecté
+    laisse une fenêtre de race côté kernel (le disconnect flush encore en
+    cours peut faire échouer le sfdisk qui suit, cf. retry plus haut). En
+    alternant sur au moins 2 devices, celui du disque précédent a toute la
+    durée de migration d'un disque pour se stabiliser avant d'être réutilisé.
+    """
+    m = re.search(r'(\d+)$', base_device)
+    if not m:
+        return base_device
+    base_num = int(m.group(1))
+    prefix = base_device[:m.start()]
+    return f"{prefix}{base_num + (index % pool_size)}"

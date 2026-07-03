@@ -142,9 +142,11 @@ def sync_vm(vm_name: str, cfg, init: bool) -> None:
         src_mount_base=cfg.src_mount_base,
     )
 
-    for on_disk, pve_disk in zip(on_vm.disks, pve_disks):
+    for idx, (on_disk, pve_disk) in enumerate(zip(on_vm.disks, pve_disks)):
+        nbd_device = nbd_mod.pick_device(cfg.nbd_device, idx)
         _migrate_disk(on_disk.disk_id, on_disk.source,
-                      pve_disk.volume, pve_vm.vmid, cfg, init, cleanup)
+                      pve_disk.volume, pve_vm.vmid, cfg, init, cleanup,
+                      nbd_device)
 
     elapsed = int(time.time() - start)
     print(f"Synchronisation terminée pour '{vm_name}' (VMID={pve_vm.vmid}) "
@@ -153,7 +155,7 @@ def sync_vm(vm_name: str, cfg, init: bool) -> None:
 
 def _migrate_disk(disk_id: int, on_source: str, pve_volume: str,
                   proxmox_vmid: str, cfg, init: bool,
-                  cleanup: cleanup_mod.Cleanup) -> None:
+                  cleanup: cleanup_mod.Cleanup, nbd_device: str) -> None:
     """src_parts et dst_parts sont appariées par position (zip), pas par
     UUID ni contenu : la partition n°1 source est supposée correspondre à
     la partition n°1 destination, etc. Ce n'est fiable que si les deux
@@ -166,10 +168,11 @@ def _migrate_disk(disk_id: int, on_source: str, pve_volume: str,
 
     pve_dev = pve.get_disk_path(pve_volume)
     cleanup.pve_dev = pve_dev
+    cleanup.nbd_device = nbd_device
 
     # 1. Connexion NBD source
     sfdisk_dump, src_parts = nbd_mod.remote_connect(
-        cfg.opennebula_host, on_source, cfg.nbd_device, cfg.src_mount_base
+        cfg.opennebula_host, on_source, nbd_device, cfg.src_mount_base
     )
 
     # 2. Table de partitions côté Proxmox (--init uniquement)
@@ -188,7 +191,7 @@ def _migrate_disk(disk_id: int, on_source: str, pve_volume: str,
                     or int(m.group()) not in bios_boot_nums]
 
     # 3. Vérification de cohérence
-    _check_partition_consistency(cfg.opennebula_host, cfg.nbd_device,
+    _check_partition_consistency(cfg.opennebula_host, nbd_device,
                                  sfdisk_dump, src_parts,
                                  pve_dev, dst_parts)
 
@@ -269,7 +272,7 @@ def _migrate_disk(disk_id: int, on_source: str, pve_volume: str,
     _post_sync(disk_id, pve_dev, proxmox_vmid, cfg, cleanup,
                root_dst_mount, root_part_num, root_fsuuid, grub_has_esp)
 
-    nbd_mod.remote_disconnect(cfg.opennebula_host, cfg.nbd_device, cfg.src_mount_base)
+    nbd_mod.remote_disconnect(cfg.opennebula_host, nbd_device, cfg.src_mount_base)
 
 
 def _handle_lvm(disk_id: int, part_idx: int, src_part: str, dst_part: str,
