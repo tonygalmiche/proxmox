@@ -164,7 +164,7 @@ def set_description(vm_name: str, cfg) -> None:
 
     description = "\n".join(lines)
     pve.set_description(pve_vm.vmid, description)
-    print(f"Description mise à jour pour '{vm_name}' (VMID={pve_vm.vmid}) :\n{description}")
+    print(f"Description mise à jour pour '{vm_name}' (VMID={pve_vm.vmid}).")
 
 
 # ---------------------------------------------------------------------------
