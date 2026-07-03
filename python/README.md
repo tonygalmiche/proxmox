@@ -55,26 +55,37 @@ dst_mount_base  = /mnt/proxmox-sync-dst
 
 ## Usage
 
+`--init` et `--rsync` prennent en paramètre obligatoire le ou les `DISK_ID` à
+traiter (numérotation OpenNebula/Proxmox : 0, 1, 2...), ou `all` pour tous les
+disques — pas de valeur par défaut implicite, pour ne jamais se tromper de
+disque par étourderie. **Un disque non mentionné (ni par `--init` ni par
+`--rsync`) n'est pas touché du tout** (ni monté, ni synchronisé).
+
 ```bash
 # 1. Créer la VM Proxmox vide (CPU/RAM/disques) d'après la config OpenNebula
 ./migrer-vm-opennebula-vers-proxmox.py vm-glpi-bookworm --create
 
-# 2. Premier passage : recrée les partitions, filesystems, copie tout, installe GRUB
-./migrer-vm-opennebula-vers-proxmox.py vm-glpi-bookworm --init
+# 2. Premier passage sur tous les disques : recrée partitions, filesystems,
+# copie tout, installe GRUB
+./migrer-vm-opennebula-vers-proxmox.py vm-glpi-bookworm --init all
 
 # 3. Resynchronisations rapides (rsync incrémental, seuls les fichiers modifiés)
-./migrer-vm-opennebula-vers-proxmox.py vm-glpi-bookworm --rsync
+./migrer-vm-opennebula-vers-proxmox.py vm-glpi-bookworm --rsync all
 
 # Tout en une commande :
-./migrer-vm-opennebula-vers-proxmox.py vm-glpi-bookworm --create --init
+./migrer-vm-opennebula-vers-proxmox.py vm-glpi-bookworm --create --init all
 
 # Diagnostic en lecture seule : état de chaque disque (table de partitions
-# source vs destination), pour savoir lesquels ont besoin d'un --init-disk
+# source vs destination), pour savoir lesquels ont besoin d'un --init
 ./migrer-vm-opennebula-vers-proxmox.py vm-glpi-bookworm --state-disk
 
-# Réinitialise un seul disque (table + filesystems) sans toucher aux autres,
-# ex. quand un --init précédent a été interrompu avant ce disque
-./migrer-vm-opennebula-vers-proxmox.py vm-glpi-bookworm --init-disk 2
+# Initialise un seul disque (table + filesystems) sans toucher aux autres,
+# ex. un disque jamais initialisé (un --init précédent interrompu avant lui),
+# ou un disque partagé déjà à jour via une autre VM qu'on ne veut pas retoucher
+./migrer-vm-opennebula-vers-proxmox.py vm-glpi-bookworm --init 2
+
+# Combine : disque 0 en init, disque 1 en rsync simple, les autres ignorés
+./migrer-vm-opennebula-vers-proxmox.py vm-glpi-bookworm --init 0 --rsync 1
 
 # Répare un boot BIOS cassé (ajoute une partition BIOS Boot ef02 si besoin)
 ./migrer-vm-opennebula-vers-proxmox.py vm-glpi-bookworm --reinstall-grub
@@ -84,8 +95,8 @@ dst_mount_base  = /mnt/proxmox-sync-dst
 ./migrer-vm-opennebula-vers-proxmox.py vm-glpi-bookworm --set-description
 ```
 
-`--init` et `--init-disk` demandent une confirmation explicite (`oui`) avant
-de recréer une table de partitions ou un filesystem.
+`--init` demande une confirmation explicite (`oui`) avant de recréer une table
+de partitions ou un filesystem sur le(s) disque(s) concerné(s).
 
 ## Structure
 
@@ -106,7 +117,7 @@ python/
                       devices NBD source entre disques pour éviter une
                       reconnexion immédiate sur le même device
     partition.py    ← table de partitions, kpartx, comparaison, diagnostic
-                      --state-disk
+                      --state-disk (liste les disques à passer à --init)
     filesystem.py   ← mkfs, e2fsck, montage
     lvm.py          ← gestion LVM (PV/VG/LV)
     sync.py         ← rsync source → destination

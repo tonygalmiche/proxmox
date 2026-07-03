@@ -226,7 +226,7 @@ def diagnose_disk(host: str, source: str, nbd_device: str, pve_dev: str,
 def print_disks_state(vm_name: str, cfg) -> None:
     """Affiche pour chaque disque de la VM si sa table de partitions Proxmox
     correspond à la source OpenNebula, ou s'il faut le réinitialiser
-    (--init-disk DISK_ID). Purement diagnostique : voir diagnose_disk()."""
+    (--init DISK_ID). Purement diagnostique : voir diagnose_disk()."""
     on_vm = on_mod.find_vm_or_template(cfg.opennebula_host, vm_name)
 
     pve_vm = pve.find_vm(vm_name)
@@ -260,10 +260,10 @@ def print_disks_state(vm_name: str, cfg) -> None:
             to_init.append(on_disk.disk_id)
 
     if to_init:
-        flags = " ".join(f"--init-disk {i}" for i in to_init)
-        print(f"\nDisque(s) à réinitialiser : {flags}")
+        flags = " ".join(str(i) for i in to_init)
+        print(f"\nDisque(s) à réinitialiser : --init {flags}")
     else:
-        print("\nTous les disques sont cohérents, aucun --init-disk nécessaire.")
+        print("\nTous les disques sont cohérents, aucun --init nécessaire.")
 
 
 def flush(device: str, partitions: List[str]) -> None:

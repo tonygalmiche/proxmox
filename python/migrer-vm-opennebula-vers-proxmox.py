@@ -171,7 +171,17 @@ def set_description(vm_name: str, cfg) -> None:
 # --init / --rsync : synchronisation des disques
 # ---------------------------------------------------------------------------
 
-def sync_vm(vm_name: str, cfg, init: bool, init_disk_ids: frozenset = frozenset()) -> None:
+def _resolve_disk_selector(selector, all_disk_ids: frozenset) -> frozenset:
+    """selector : None (option absente), 'all', ou frozenset d'entiers.
+    Retourne l'ensemble effectif de disk_id concernés (vide si absente)."""
+    if selector is None:
+        return frozenset()
+    if selector == "all":
+        return all_disk_ids
+    return selector
+
+
+def sync_vm(vm_name: str, cfg, init_sel, rsync_sel) -> None:
     on_vm = on_mod.find_vm_or_template(cfg.opennebula_host, vm_name)
     if not on_vm.is_stopped():
         die(f"la VM '{on_vm.name}' n'est pas arrêtée sur OpenNebula (état={on_vm.state}).")
@@ -187,6 +197,13 @@ def sync_vm(vm_name: str, cfg, init: bool, init_disk_ids: frozenset = frozenset(
         die(f"nombre de disques différent : OpenNebula={len(on_vm.disks)}, "
             f"Proxmox={len(pve_disks)}.")
 
+    all_disk_ids = frozenset(d.disk_id for d in on_vm.disks)
+    init_ids = _resolve_disk_selector(init_sel, all_disk_ids)
+    rsync_ids = _resolve_disk_selector(rsync_sel, all_disk_ids)
+    touched_ids = init_ids | rsync_ids
+    if not touched_ids:
+        die("--init/--rsync doit préciser au moins un disque (ou 'all').")
+
     usage_pct = pve.get_storage_usage_pct(cfg.proxmox_storage)
     print(f"  Occupation du storage '{cfg.proxmox_storage}' : {usage_pct:.1f}% "
           f"(seuil d'alerte : {cfg.thin_pool_alert_pct:.0f}%)")
@@ -198,8 +215,8 @@ def sync_vm(vm_name: str, cfg, init: bool, init_disk_ids: frozenset = frozenset(
     import time
     start = time.time()
     print(f"VM '{vm_name}' : OpenNebula ID={on_vm.vm_id} ↔ Proxmox VMID={pve_vm.vmid} "
-          f"({len(on_vm.disks)} disque(s), init={'oui' if init else 'non'}) "
-          f"— début {time.strftime('%H:%M:%S')}")
+          f"({len(touched_ids)}/{len(on_vm.disks)} disque(s) traité(s), "
+          f"init={sorted(init_ids) or 'aucun'}) — début {time.strftime('%H:%M:%S')}")
 
     cleanup = cleanup_mod.Cleanup(
         host=cfg.opennebula_host,
@@ -209,8 +226,10 @@ def sync_vm(vm_name: str, cfg, init: bool, init_disk_ids: frozenset = frozenset(
     )
 
     for idx, (on_disk, pve_disk) in enumerate(zip(on_vm.disks, pve_disks)):
+        if on_disk.disk_id not in touched_ids:
+            continue
         nbd_device = nbd_mod.pick_device(cfg.nbd_device, idx)
-        disk_init = init or on_disk.disk_id in init_disk_ids
+        disk_init = on_disk.disk_id in init_ids
         _migrate_disk(on_disk.disk_id, on_disk.source,
                       pve_disk.volume, pve_vm.vmid, cfg, disk_init, cleanup,
                       nbd_device)
@@ -485,6 +504,16 @@ def reinstall_grub(vm_name: str, cfg) -> None:
                                  cfg.grub_nbd_device, cfg.dst_mount_base)
 
 
+def _parse_disk_selector_arg(values):
+    """Convertit la valeur brute de --init/--rsync (liste de tokens argparse)
+    en None (option absente), 'all', ou frozenset d'entiers."""
+    if values is None:
+        return None
+    if len(values) == 1 and values[0].lower() == "all":
+        return "all"
+    return frozenset(int(v) for v in values)
+
+
 # ---------------------------------------------------------------------------
 # Point d'entrée
 # ---------------------------------------------------------------------------
@@ -497,23 +526,21 @@ def main() -> None:
     parser.add_argument("vm_name", help="Nom de la VM")
     parser.add_argument("--create", action="store_true",
                         help="Crée la VM sur Proxmox (disques vides)")
-    parser.add_argument("--init", action="store_true",
-                        help="Premier passage : recrée partitions + filesystems + rsync + GRUB")
-    parser.add_argument("--rsync", action="store_true",
-                        help="Passages suivants : rsync uniquement")
+    parser.add_argument("--init", nargs="+", metavar="DISK_ID",
+                        help="Premier passage sur le(s) disque(s) indiqué(s) : recrée "
+                             "table de partitions + filesystems + rsync + GRUB. "
+                             "'all' pour tous les disques. Les disques non mentionnés "
+                             "(par --init ou --rsync) ne sont pas touchés du tout.")
+    parser.add_argument("--rsync", nargs="+", metavar="DISK_ID",
+                        help="Resynchronisation (rsync incrémental) du/des disque(s) "
+                             "indiqué(s). 'all' pour tous les disques. Les disques non "
+                             "mentionnés (par --init ou --rsync) ne sont pas touchés du tout.")
     parser.add_argument("--reinstall-grub", action="store_true",
                         help="Répare un boot BIOS cassé (ajoute une partition "
                              "BIOS Boot ef02 si besoin) et réinstalle GRUB")
-    parser.add_argument("--init-disk", type=int, action="append", metavar="DISK_ID",
-                        help="Recrée la table de partitions + filesystems du disque "
-                             "DISK_ID uniquement (les autres disques ne sont pas "
-                             "touchés). Cumulable, répétable. À utiliser avec --rsync "
-                             "quand un disque précis n'a jamais été initialisé "
-                             "(ex : un --init précédent interrompu avant ce disque) "
-                             "sans avoir à tout refaire.")
     parser.add_argument("--state-disk", action="store_true",
                         help="Diagnostic en lecture seule : liste les disques et "
-                             "indique lesquels ont besoin de --init-disk.")
+                             "indique lesquels ont besoin de --init.")
     parser.add_argument("--set-description", action="store_true",
                         help="Renseigne les Notes de la VM Proxmox : nom OpenNebula "
                              "(instance ou template) puis, une ligne par disque dans "
@@ -522,10 +549,9 @@ def main() -> None:
     args = parser.parse_args()
 
     if not (args.create or args.init or args.rsync or args.reinstall_grub
-            or args.init_disk or args.state_disk or args.set_description):
+            or args.state_disk or args.set_description):
         parser.error("Au moins une option parmi --create, --init, --rsync, "
-                     "--reinstall-grub, --init-disk, --state-disk, "
-                     "--set-description est requise.")
+                     "--reinstall-grub, --state-disk, --set-description est requise.")
 
     check_root()
     check_tools()
@@ -541,22 +567,19 @@ def main() -> None:
         except RuntimeError as exc:
             die(str(exc))
 
-    init_disk_ids = frozenset(args.init_disk or ())
+    init_sel = _parse_disk_selector_arg(args.init)
+    rsync_sel = _parse_disk_selector_arg(args.rsync)
 
-    if args.init or args.rsync or init_disk_ids:
-        if args.init:
-            print(f"⚠️  --init va recréer les tables de partitions et filesystems "
-                  f"sur les disques Proxmox de '{args.vm_name}'.")
-        if init_disk_ids:
-            print(f"⚠️  --init-disk va recréer la table de partitions et les "
-                  f"filesystems du/des disque(s) {sorted(init_disk_ids)} de "
-                  f"'{args.vm_name}' (les autres disques ne sont pas touchés).")
-        if args.init or init_disk_ids:
+    if init_sel is not None or rsync_sel is not None:
+        if init_sel is not None:
+            disks_txt = "tous les disques" if init_sel == "all" else f"disque(s) {sorted(init_sel)}"
+            print(f"⚠️  --init va recréer la table de partitions et les filesystems "
+                  f"du/des {disks_txt} de '{args.vm_name}'.")
             answer = input("Confirmer ? (oui/non) : ").strip()
             if answer != "oui":
                 print("Annulé.")
                 sys.exit(0)
-        sync_vm(args.vm_name, cfg, init=args.init, init_disk_ids=init_disk_ids)
+        sync_vm(args.vm_name, cfg, init_sel=init_sel, rsync_sel=rsync_sel)
 
     if args.reinstall_grub:
         reinstall_grub(args.vm_name, cfg)
