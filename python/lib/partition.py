@@ -227,7 +227,7 @@ def print_disks_state(vm_name: str, cfg) -> None:
     """Affiche pour chaque disque de la VM si sa table de partitions Proxmox
     correspond à la source OpenNebula, ou s'il faut le réinitialiser
     (--init-disk DISK_ID). Purement diagnostique : voir diagnose_disk()."""
-    on_vm = on_mod.find_vm(cfg.opennebula_host, vm_name)
+    on_vm = on_mod.find_vm_or_template(cfg.opennebula_host, vm_name)
 
     pve_vm = pve.find_vm(vm_name)
     if not pve_vm:

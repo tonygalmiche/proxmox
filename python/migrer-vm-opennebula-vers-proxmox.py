@@ -75,7 +75,7 @@ def mb_to_gb_ceil(mb: int) -> int:
 # ---------------------------------------------------------------------------
 
 def create_vm(vm_name: str, cfg) -> None:
-    on_vm = on_mod.find_vm(cfg.opennebula_host, vm_name)
+    on_vm = on_mod.find_vm_or_template(cfg.opennebula_host, vm_name)
 
     existing = pve.find_vm(vm_name)
     if existing:
@@ -106,7 +106,7 @@ def create_vm(vm_name: str, cfg) -> None:
 # ---------------------------------------------------------------------------
 
 def sync_vm(vm_name: str, cfg, init: bool, init_disk_ids: frozenset = frozenset()) -> None:
-    on_vm = on_mod.find_vm(cfg.opennebula_host, vm_name)
+    on_vm = on_mod.find_vm_or_template(cfg.opennebula_host, vm_name)
     if not on_vm.is_stopped():
         die(f"la VM '{on_vm.name}' n'est pas arrêtée sur OpenNebula (état={on_vm.state}).")
 
