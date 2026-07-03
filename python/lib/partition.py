@@ -29,12 +29,22 @@ def apply_table(device: str, sfdisk_dump: str) -> None:
 
 
 def kpartx_add(device: str) -> List[str]:
-    """Expose les partitions via kpartx. Retourne la liste /dev/mapper/... (ou [device])."""
-    r = run(["kpartx", "-avs", device], capture=True, check=False)
+    """Expose les partitions via kpartx. Retourne la liste /dev/mapper/... (ou [device]).
+
+    On lit la liste des partitions via `kpartx -l` (état actuel du device),
+    plutôt que de parser le stdout de `kpartx -avs` : celui-ci n'affiche une
+    ligne "add map" que pour un mapping nouvellement créé. Si le mapping
+    existe déjà (résidu d'un run précédent, udev, etc.), `-avs` réussit sans
+    rien afficher sur stdout, et on retombait alors sur [device] — faisant
+    croire à tort que le disque de destination n'a pas de table de
+    partitions du tout (cf. RuntimeError "table de partitions différente").
+    """
+    run(["kpartx", "-avs", device], check=False)
+    r = run(["kpartx", "-l", device], capture=True, check=False)
     lines = [l for l in r.stdout.splitlines() if l.strip()]
     if not lines:
         return [device]
-    return ["/dev/mapper/" + l.split()[2] for l in lines if len(l.split()) >= 3]
+    return ["/dev/mapper/" + l.split()[0] for l in lines]
 
 
 def kpartx_remove(device: str) -> None:
