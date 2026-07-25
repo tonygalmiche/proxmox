@@ -47,6 +47,7 @@ REQUIRED_TOOLS = [
 
 def die(msg: str) -> None:
     print(f"Erreur : {msg}", file=sys.stderr)
+    log(f"Erreur : {msg}")
     sys.exit(1)
 
 
