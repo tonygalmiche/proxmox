@@ -586,6 +586,10 @@ def main() -> None:
 
 
 def _sync(args) -> None:
+    mode = "--init" if args.init else "--rsync"
+    start = time.time()
+    print(f"{time.strftime('%H:%M:%S')} {mode} {args.vm_name} : début")
+
     source_vmid = find_vmid(args.source_host, args.vm_name)
     if not source_vmid:
         die(f"VM '{args.vm_name}' introuvable sur {args.source_host}.")
@@ -603,19 +607,16 @@ def _sync(args) -> None:
                 if d[0] not in args.skip_disk]
     if args.only_disk:
         src_disks = [d for d in src_disks if d[0] in args.only_disk]
-    dst_disks = get_disks(None, dest_vmid)
+    dst_disks = [d for d in get_disks(None, dest_vmid) if d[0] not in args.skip_disk]
     dst_by_slot = {slot: vol for slot, vol, _ in dst_disks}
     if not args.only_disk and len(src_disks) != len(dst_disks):
         die(f"nombre de disques différent : source={len(src_disks)} (après "
-            f"--skip-disk), destination={len(dst_disks)}.")
+            f"--skip-disk), destination={len(dst_disks)} (après --skip-disk).")
 
-    mode = "--init" if args.init else "--rsync"
     if args.init:
         log(f"⚠️  --init recrée la table de partitions et les filesystems "
            f"des {len(src_disks)} disque(s) traité(s) de '{args.vm_name}'.")
 
-    start = time.time()
-    print(f"{time.strftime('%H:%M:%S')} {mode} {args.vm_name} : début")
     log(f"{mode} {args.vm_name} : {args.source_host} (VMID={source_vmid}) → "
        f"local (VMID={dest_vmid}) — début")
 
