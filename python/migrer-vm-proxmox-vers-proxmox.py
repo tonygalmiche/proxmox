@@ -14,9 +14,12 @@ Usage:
             config de la VM source. Ne fait rien si la VM existe déjà ici.
   --init    Premier passage : recopie la table de partitions, recrée les
             filesystems, puis rsync complet. Destructif pour les disques
-            destination (normalement vides à ce stade).
+            destination (normalement vides à ce stade). Réinstalle aussi
+            GRUB (BIOS/MBR) automatiquement à la fin (équivalent
+            --reinstall-grub).
   --rsync   Passages suivants : rsync incrémental uniquement (partitions et
-            filesystems déjà en place).
+            filesystems déjà en place). Ne touche pas à GRUB (déjà installé
+            lors du --init).
 
 Les options sont cumulables : --create --init lance les deux en séquence.
 
@@ -35,9 +38,11 @@ import subprocess
 import sys
 import time
 
-REQUIRED_TOOLS = [
-    "qm", "pvesm", "kpartx", "sfdisk", "partprobe", "blkid",
-    "mkfs.ext4", "mkfs.xfs", "xfs_admin", "mkswap", "rsync", "ssh",
+CREATE_TOOLS = ["qm", "pvesm", "ssh"]
+SYNC_TOOLS = CREATE_TOOLS + [
+    "kpartx", "sfdisk", "partprobe", "blkid",
+    "mkfs.ext4", "mkfs.xfs", "xfs_admin", "mkswap", "rsync",
+    "chroot", "grub-install", "update-grub",
 ]
 SRC_MOUNT_BASE = "/mnt/migrate-src"
 DST_MOUNT_BASE = "/mnt/migrate-dst"
@@ -69,8 +74,8 @@ def check_root() -> None:
         die("ce script doit être exécuté en root (mount/mkfs).")
 
 
-def check_tools() -> None:
-    missing = [t for t in REQUIRED_TOOLS if not _which(t)]
+def check_tools(tools: list) -> None:
+    missing = [t for t in tools if not _which(t)]
     if missing:
         die(f"commandes manquantes : {', '.join(missing)}")
 
@@ -119,6 +124,15 @@ def disk_path(host, volume: str) -> str:
     return sh(host, f"pvesm path {volume}", capture=True).stdout.strip()
 
 
+def activate_lv(host, device: str) -> None:
+    """Active le volume logique (LVM classique) si besoin : sans ça, /dev/<vg>/<lv>
+    n'existe pas tant que la VM n'a pas démarré au moins une fois depuis l'activation
+    (contrairement au LVM-thin, activé automatiquement par udev)."""
+    m = re.match(r'^/dev/([^/]+)/(.+)$', device)
+    if m:
+        sh(host, f"lvchange -ay {m.group(1)}/{m.group(2)}", check=False)
+
+
 def get_vm_specs(host, vmid: str):
     """Retourne (memory_mb, cores) lus depuis 'qm config'."""
     text = sh(host, f"qm config {vmid}", capture=True).stdout
@@ -128,11 +142,47 @@ def get_vm_specs(host, vmid: str):
             int(cores.group(1)) if cores else 1)
 
 
+def get_vm_name(host, vmid: str) -> str:
+    text = sh(host, f"qm config {vmid}", capture=True).stdout
+    m = re.search(r'^name:\s*(\S+)', text, re.M)
+    return m.group(1) if m else ""
+
+
+def slot_num(slot: str) -> int:
+    return int(re.match(r'^[a-z]+(\d+)$', slot).group(1))
+
+
+def volume_owner_vmid(volume: str):
+    """Extrait le VMID propriétaire d'après le nom du volume (ex: 'vm-115-disk-1' -> 115).
+    None si le volume ne suit pas cette convention de nommage."""
+    m = re.search(r'vm-(\d+)-disk-\d+', volume)
+    return m.group(1) if m else None
+
+
+def get_nets(host, vmid: str):
+    """Retourne [(slot, bridge, tag), ...] lus depuis 'qm config' (netN: ...).
+    tag est None si la ligne ne précise pas de VLAN."""
+    r = sh(host, f"qm config {vmid}", capture=True)
+    nets = []
+    for line in r.stdout.splitlines():
+        m = re.match(r'^net(\d+):\s*(\S+)', line)
+        if not m:
+            continue
+        idx, opts = m.group(1), m.group(2)
+        bridge_m = re.search(r'\bbridge=([^,\s]+)', opts)
+        tag_m = re.search(r'\btag=(\d+)', opts)
+        if bridge_m:
+            nets.append((int(idx), bridge_m.group(1), tag_m.group(1) if tag_m else None))
+    nets.sort(key=lambda n: n[0])
+    return nets
+
+
 # ---------------------------------------------------------------------------
-# --create : crée la VM destination (CPU/RAM/disques vides) d'après la source
+# --create : crée la VM destination (CPU/RAM/disques/réseau vides) d'après la source
 # ---------------------------------------------------------------------------
 
-def create_vm(source_host: str, vm_name: str, storage: str, bridge: str) -> None:
+def create_vm(source_host: str, vm_name: str, storage: str, bridge: str,
+              skip_disks: frozenset = frozenset()) -> None:
     if find_vmid(None, vm_name):
         print(f"VM '{vm_name}' existe déjà sur ce serveur. Rien à faire.")
         return
@@ -147,18 +197,56 @@ def create_vm(source_host: str, vm_name: str, storage: str, bridge: str) -> None
     src_disks = get_disks(source_host, source_vmid)
     if not src_disks:
         die(f"VM '{vm_name}' sur {source_host} n'a aucun disque.")
+    src_nets = get_nets(source_host, source_vmid)
 
     vmid = sh(None, "pvesh get /cluster/nextid", capture=True).stdout.strip()
     sh(None, f"qm create {vmid} --name {vm_name} --memory {memory_mb} --cores {cores} "
-             f"--cpu host --ostype l26 --scsihw virtio-scsi-single "
-             f"--net0 virtio,bridge={bridge},firewall=1")
+             f"--cpu host --ostype l26 --scsihw virtio-scsi-single")
 
-    for idx, (slot, volume, size) in enumerate(src_disks):
+    for slot, volume, size in src_disks:
+        if slot in skip_disks:
+            print(f"  disque {slot} : {volume} ({size or '?'}) -> ignoré (--skip-disk)")
+            continue
+        idx = slot_num(slot)
+        owner_vmid = volume_owner_vmid(volume)
+
+        if owner_vmid and owner_vmid != source_vmid:
+            # Disque partagé, appartenant à une autre VM source : on ne crée pas de
+            # nouveau disque, on rattache le volume déjà créé pour cette autre VM
+            # (sinon on duplique inutilement plusieurs To et on casse le partage).
+            owner_name = get_vm_name(source_host, owner_vmid)
+            owner_dest_vmid = find_vmid(None, owner_name)
+            if not owner_dest_vmid:
+                die(f"le disque '{volume}' est partagé avec la VM '{owner_name}' "
+                    f"(VMID={owner_vmid} sur {source_host}), qui n'est pas encore créée "
+                    f"sur ce serveur. Migrez-la d'abord (--create --init), puis relancez "
+                    f"'{vm_name}'.")
+            owner_dest_disks = get_disks(None, owner_dest_vmid)
+            reused = next((v for s, v, _ in owner_dest_disks if slot_num(s) == idx), None)
+            if not reused:
+                die(f"aucun disque au slot '{slot}' trouvé sur '{owner_name}' "
+                    f"(VMID={owner_dest_vmid}) pour rattacher le volume partagé '{volume}'.")
+            sh(None, f"qm set {vmid} --scsi{idx} {reused},iothread=1")
+            print(f"  disque {idx} : {volume} ({size or '?'}) -> {reused} "
+                 f"(partagé avec '{owner_name}', rattaché)")
+            continue
+
         size_gb = math.ceil(float(size.rstrip("GgMm"))) if size else 32
         if size and size[-1] in "Mm":
             size_gb = math.ceil(size_gb / 1024)
         sh(None, f"qm set {vmid} --scsi{idx} {storage}:{size_gb},iothread=1")
         print(f"  disque {idx} : {volume} ({size or '?'}) -> {storage} ({size_gb}G, vide)")
+
+    if src_nets:
+        for net_idx, net_bridge, tag in src_nets:
+            tag_opt = f",tag={tag}" if tag else ""
+            sh(None, f"qm set {vmid} --net{net_idx} virtio,bridge={net_bridge}{tag_opt},firewall=1")
+            print(f"  réseau net{net_idx} : bridge={net_bridge}"
+                 f"{' tag=' + tag if tag else ''} (identique à la source)")
+    else:
+        sh(None, f"qm set {vmid} --net0 virtio,bridge={bridge},firewall=1")
+        print(f"  réseau net0 : bridge={bridge} (aucune interface trouvée côté source, "
+             f"valeur par défaut)")
 
     sh(None, f"qm set {vmid} --boot order=scsi0")
     print(f"VM '{vm_name}' créée sur ce serveur (VMID={vmid}, {memory_mb} Mo RAM, {cores} cores).")
@@ -261,6 +349,9 @@ def sync_disk(source_host: str, disk_idx: int, src_volume: str, dst_volume: str,
     print(f"  Disque {disk_idx} : {source_host}:{src_dev} ({src_volume}) → "
           f"{dst_dev} ({dst_volume})")
 
+    activate_lv(source_host, src_dev)
+    activate_lv(None, dst_dev)
+
     if init:
         dump = sfdisk_dump(source_host, src_dev)
         if dump.strip():
@@ -311,6 +402,62 @@ def sync_disk(source_host: str, disk_idx: int, src_volume: str, dst_volume: str,
 
 
 # ---------------------------------------------------------------------------
+# --reinstall-grub : réinstalle GRUB (BIOS/MBR) sur le disque destination
+# ---------------------------------------------------------------------------
+
+def find_root_partition(parts: list):
+    """Retourne la partition contenant /etc/fstab (root), ou None."""
+    for p in parts:
+        info = blkid_info(None, p)
+        if info["type"] not in ("ext2", "ext3", "ext4", "xfs"):
+            continue
+        mnt = f"{DST_MOUNT_BASE}/grub-check"
+        mount_local(p, mnt)
+        has_fstab = os.path.exists(os.path.join(mnt, "etc/fstab"))
+        umount_local(mnt)
+        if has_fstab:
+            return p
+    return None
+
+
+def reinstall_grub(vm_name: str) -> None:
+    vmid = find_vmid(None, vm_name)
+    if not vmid:
+        die(f"VM '{vm_name}' introuvable sur ce serveur.")
+
+    disks = get_disks(None, vmid)
+    if not disks:
+        die(f"VM '{vm_name}' (VMID={vmid}) n'a aucun disque.")
+    _, volume, _ = disks[0]
+
+    dev = disk_path(None, volume)
+    activate_lv(None, dev)
+    parts = kpartx_add(None, dev)
+
+    try:
+        root_part = find_root_partition(parts)
+        if not root_part:
+            die("aucune partition root (avec /etc/fstab) trouvée sur le disque destination.")
+
+        mnt = f"{DST_MOUNT_BASE}/grub-root"
+        mount_local(root_part, mnt)
+        try:
+            for sub in ("dev", "proc", "sys"):
+                sh(None, f"mount --bind /{sub} {mnt}/{sub}")
+            print(f"  Réinstallation de GRUB sur {dev} (root={root_part})...")
+            sh(None, f"chroot {mnt} grub-install {dev}")
+            sh(None, f"chroot {mnt} update-grub")
+        finally:
+            for sub in ("dev", "proc", "sys"):
+                sh(None, f"umount {mnt}/{sub}", check=False)
+            umount_local(mnt)
+    finally:
+        kpartx_remove(None, dev)
+
+    print(f"GRUB réinstallé pour '{vm_name}' (VMID={vmid}).")
+
+
+# ---------------------------------------------------------------------------
 # Point d'entrée
 # ---------------------------------------------------------------------------
 
@@ -325,6 +472,10 @@ def main() -> None:
                         help="Storage destination pour --create (défaut : local-lvm)")
     parser.add_argument("--bridge", default="vmbr0",
                         help="Bridge réseau destination pour --create (défaut : vmbr0)")
+    parser.add_argument("--skip-disk", nargs="+", default=[], metavar="SLOT",
+                        help="Slot(s) à ignorer totalement (ex: scsi1), pour --create "
+                             "et --init/--rsync : ni créé, ni synchronisé. Utile pour un "
+                             "disque partagé qu'on ne veut pas migrer sur ce serveur.")
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--init", action="store_true",
                        help="Premier passage : recopie la table de partitions, "
@@ -332,20 +483,31 @@ def main() -> None:
                             "côté destination).")
     group.add_argument("--rsync", action="store_true",
                        help="Resynchronisation incrémentale (rsync uniquement).")
+    parser.add_argument("--reinstall-grub", action="store_true",
+                        help="Réinstalle GRUB (BIOS/MBR) sur le disque destination "
+                             "(chroot + grub-install + update-grub).")
     args = parser.parse_args()
 
-    if not (args.create or args.init or args.rsync):
-        parser.error("Au moins une option parmi --create, --init, --rsync est requise.")
+    if not (args.create or args.init or args.rsync or args.reinstall_grub):
+        parser.error("Au moins une option parmi --create, --init, --rsync, "
+                     "--reinstall-grub est requise.")
 
     check_root()
-    check_tools()
+    needs_sync_tools = args.init or args.rsync or args.reinstall_grub
+    check_tools(SYNC_TOOLS if needs_sync_tools else CREATE_TOOLS)
+    args.skip_disk = frozenset(args.skip_disk)
 
     if args.create:
-        create_vm(args.source_host, args.vm_name, args.storage, args.bridge)
+        create_vm(args.source_host, args.vm_name, args.storage, args.bridge, args.skip_disk)
 
-    if not (args.init or args.rsync):
-        return
+    if args.init or args.rsync:
+        _sync(args)
 
+    if args.reinstall_grub or args.init:
+        reinstall_grub(args.vm_name)
+
+
+def _sync(args) -> None:
     source_vmid = find_vmid(args.source_host, args.vm_name)
     if not source_vmid:
         die(f"VM '{args.vm_name}' introuvable sur {args.source_host}.")
@@ -359,24 +521,33 @@ def main() -> None:
     if get_status(None, dest_vmid) != "stopped":
         die(f"la VM '{args.vm_name}' n'est pas arrêtée sur ce serveur.")
 
-    src_disks = get_disks(args.source_host, source_vmid)
+    src_disks = [d for d in get_disks(args.source_host, source_vmid)
+                if d[0] not in args.skip_disk]
     dst_disks = get_disks(None, dest_vmid)
+    dst_by_slot = {slot: vol for slot, vol, _ in dst_disks}
     if len(src_disks) != len(dst_disks):
-        die(f"nombre de disques différent : source={len(src_disks)}, "
-            f"destination={len(dst_disks)}.")
+        die(f"nombre de disques différent : source={len(src_disks)} (après "
+            f"--skip-disk), destination={len(dst_disks)}.")
 
     if args.init:
-        print(f"⚠️  --init va recréer la table de partitions et les filesystems "
+        print(f"⚠️  --init recrée la table de partitions et les filesystems "
               f"des {len(dst_disks)} disque(s) de '{args.vm_name}' sur ce serveur.")
-        if input("Confirmer ? (oui/non) : ").strip() != "oui":
-            print("Annulé.")
-            sys.exit(0)
 
     start = time.time()
     print(f"VM '{args.vm_name}' : {args.source_host} (VMID={source_vmid}) → "
           f"local (VMID={dest_vmid}) — début {time.strftime('%H:%M:%S')}")
 
-    for idx, ((_, src_vol, _), (_, dst_vol, _)) in enumerate(zip(src_disks, dst_disks)):
+    for src_slot, src_vol, _ in src_disks:
+        idx = slot_num(src_slot)
+        dst_vol = dst_by_slot.get(src_slot)
+        if not dst_vol:
+            die(f"aucun disque au slot '{src_slot}' côté destination "
+                f"(vérifiez --skip-disk / la config destination).")
+        owner_vmid = volume_owner_vmid(src_vol)
+        if owner_vmid and owner_vmid != source_vmid:
+            print(f"  Disque {idx} : {src_vol} partagé (propriétaire VMID={owner_vmid} "
+                 f"sur {args.source_host}) — déjà synchronisé via cette VM, ignoré.")
+            continue
         sync_disk(args.source_host, idx, src_vol, dst_vol, args.init)
 
     elapsed = int(time.time() - start)
