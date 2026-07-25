@@ -221,9 +221,9 @@ def sync_vm(vm_name: str, cfg, init_sel, rsync_sel) -> None:
             f"synchronisation bloquée pour éviter de saturer le pool.")
 
     start = time.time()
-    print(f"VM '{vm_name}' : OpenNebula ID={on_vm.vm_id} ↔ Proxmox VMID={pve_vm.vmid} "
-          f"({len(touched_ids)}/{len(on_vm.disks)} disque(s) traité(s), "
-          f"init={sorted(init_ids) or 'aucun'}) — début {time.strftime('%H:%M:%S')}")
+    print(f"{time.strftime('%H:%M:%S')} VM '{vm_name}' : OpenNebula ID={on_vm.vm_id} "
+          f"↔ Proxmox VMID={pve_vm.vmid} ({len(touched_ids)}/{len(on_vm.disks)} disque(s) "
+          f"traité(s), init={sorted(init_ids) or 'aucun'}) — début")
 
     cleanup = cleanup_mod.Cleanup(
         host=cfg.opennebula_host,
@@ -242,8 +242,8 @@ def sync_vm(vm_name: str, cfg, init_sel, rsync_sel) -> None:
                       nbd_device)
 
     elapsed = int(time.time() - start)
-    print(f"Synchronisation terminée pour '{vm_name}' (VMID={pve_vm.vmid}) "
-          f"— fin {time.strftime('%H:%M:%S')} (durée {elapsed}s)")
+    print(f"{time.strftime('%H:%M:%S')} VM '{vm_name}' (VMID={pve_vm.vmid}) : "
+          f"synchronisation terminée — fin (durée {elapsed}s)")
 
 
 def _migrate_disk(disk_id: int, on_source: str, pve_volume: str,
