@@ -31,7 +31,7 @@ import opennebula as on_mod
 import partition as part
 import proxmox as pve
 import sync as sync_mod
-from logutil import log
+from logutil import announce, log
 
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.ini")
 REQUIRED_TOOLS = [
@@ -101,13 +101,13 @@ def _find_shared_volume(disk) -> str | None:
 
 def create_vm(vm_name: str, cfg) -> None:
     start = time.time()
-    print(f"{time.strftime('%H:%M:%S')} --create {vm_name} : début")
+    announce(f"--create {vm_name} : début")
 
     on_vm = on_mod.find_vm_or_template(cfg.opennebula_host, vm_name)
 
     existing = pve.find_vm(vm_name)
     if existing:
-        print(f"VM '{vm_name}' existe déjà sur Proxmox (VMID={existing.vmid}). Rien à faire.")
+        announce(f"VM '{vm_name}' existe déjà sur Proxmox (VMID={existing.vmid}). Rien à faire.")
         return
 
     if not on_vm.is_stopped():
@@ -135,7 +135,7 @@ def create_vm(vm_name: str, cfg) -> None:
     log(f"VM '{vm_name}' créée sur Proxmox (VMID={vmid}).")
 
     elapsed = int(time.time() - start)
-    print(f"{time.strftime('%H:%M:%S')} --create {vm_name} : fin (VMID={vmid}, durée {elapsed}s)")
+    announce(f"--create {vm_name} : fin (VMID={vmid}, durée {elapsed}s)")
 
 
 # ---------------------------------------------------------------------------
@@ -172,7 +172,7 @@ def set_description(vm_name: str, cfg) -> None:
 
     description = "\n".join(lines)
     pve.set_description(pve_vm.vmid, description)
-    print(f"Description mise à jour pour '{vm_name}' (VMID={pve_vm.vmid}).")
+    announce(f"Description mise à jour pour '{vm_name}' (VMID={pve_vm.vmid}).")
 
 
 # ---------------------------------------------------------------------------
@@ -221,9 +221,9 @@ def sync_vm(vm_name: str, cfg, init_sel, rsync_sel) -> None:
             f"synchronisation bloquée pour éviter de saturer le pool.")
 
     start = time.time()
-    print(f"{time.strftime('%H:%M:%S')} VM '{vm_name}' : OpenNebula ID={on_vm.vm_id} "
-          f"↔ Proxmox VMID={pve_vm.vmid} ({len(touched_ids)}/{len(on_vm.disks)} disque(s) "
-          f"traité(s), init={sorted(init_ids) or 'aucun'}) — début")
+    announce(f"VM '{vm_name}' : OpenNebula ID={on_vm.vm_id} "
+             f"↔ Proxmox VMID={pve_vm.vmid} ({len(touched_ids)}/{len(on_vm.disks)} disque(s) "
+             f"traité(s), init={sorted(init_ids) or 'aucun'}) — début")
 
     cleanup = cleanup_mod.Cleanup(
         host=cfg.opennebula_host,
@@ -242,8 +242,8 @@ def sync_vm(vm_name: str, cfg, init_sel, rsync_sel) -> None:
                       nbd_device)
 
     elapsed = int(time.time() - start)
-    print(f"{time.strftime('%H:%M:%S')} VM '{vm_name}' (VMID={pve_vm.vmid}) : "
-          f"synchronisation terminée — fin (durée {elapsed}s)")
+    announce(f"VM '{vm_name}' (VMID={pve_vm.vmid}) : "
+             f"synchronisation terminée — fin (durée {elapsed}s)")
 
 
 def _migrate_disk(disk_id: int, on_source: str, pve_volume: str,
@@ -496,7 +496,7 @@ def _check_partition_consistency(host: str, nbd_device: str,
 
 def reinstall_grub(vm_name: str, cfg) -> None:
     start = time.time()
-    print(f"{time.strftime('%H:%M:%S')} --reinstall-grub {vm_name} : début")
+    announce(f"--reinstall-grub {vm_name} : début")
 
     pve_vm = pve.find_vm(vm_name)
     if not pve_vm:
@@ -511,8 +511,8 @@ def reinstall_grub(vm_name: str, cfg) -> None:
                                  cfg.grub_nbd_device, cfg.dst_mount_base)
 
     elapsed = int(time.time() - start)
-    print(f"{time.strftime('%H:%M:%S')} --reinstall-grub {vm_name} : fin "
-          f"(VMID={pve_vm.vmid}, durée {elapsed}s)")
+    announce(f"--reinstall-grub {vm_name} : fin "
+             f"(VMID={pve_vm.vmid}, durée {elapsed}s)")
 
 
 def _parse_disk_selector_arg(values):
