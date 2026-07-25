@@ -21,3 +21,10 @@ def announce(msg: str) -> None:
     print(line)
     with open(LOG_FILE, "a") as f:
         f.write(line + "\n")
+
+
+def separator() -> None:
+    """Ligne vide à l'écran et dans le log, pour séparer les VM migrées."""
+    print()
+    with open(LOG_FILE, "a") as f:
+        f.write("\n")

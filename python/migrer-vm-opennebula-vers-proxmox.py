@@ -31,7 +31,7 @@ import opennebula as on_mod
 import partition as part
 import proxmox as pve
 import sync as sync_mod
-from logutil import announce, log
+from logutil import announce, log, separator
 
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.ini")
 REQUIRED_TOOLS = [
@@ -108,6 +108,7 @@ def create_vm(vm_name: str, cfg) -> None:
     existing = pve.find_vm(vm_name)
     if existing:
         announce(f"VM '{vm_name}' existe déjà sur Proxmox (VMID={existing.vmid}). Rien à faire.")
+        separator()
         return
 
     if not on_vm.is_stopped():
@@ -136,6 +137,7 @@ def create_vm(vm_name: str, cfg) -> None:
 
     elapsed = int(time.time() - start)
     announce(f"--create {vm_name} : fin (VMID={vmid}, durée {elapsed}s)")
+    separator()
 
 
 # ---------------------------------------------------------------------------
@@ -173,6 +175,7 @@ def set_description(vm_name: str, cfg) -> None:
     description = "\n".join(lines)
     pve.set_description(pve_vm.vmid, description)
     announce(f"Description mise à jour pour '{vm_name}' (VMID={pve_vm.vmid}).")
+    separator()
 
 
 # ---------------------------------------------------------------------------
@@ -244,6 +247,7 @@ def sync_vm(vm_name: str, cfg, init_sel, rsync_sel) -> None:
     elapsed = int(time.time() - start)
     announce(f"VM '{vm_name}' (VMID={pve_vm.vmid}) : "
              f"synchronisation terminée — fin (durée {elapsed}s)")
+    separator()
 
 
 def _migrate_disk(disk_id: int, on_source: str, pve_volume: str,
@@ -513,6 +517,7 @@ def reinstall_grub(vm_name: str, cfg) -> None:
     elapsed = int(time.time() - start)
     announce(f"--reinstall-grub {vm_name} : fin "
              f"(VMID={pve_vm.vmid}, durée {elapsed}s)")
+    separator()
 
 
 def _parse_disk_selector_arg(values):
