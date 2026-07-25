@@ -235,6 +235,9 @@ def create_vm(source_host: str, vm_name: str, storage: str, bridge: str,
 
     vmid = find_vmid(None, vm_name)
     if vmid:
+        if get_status(None, vmid) != "stopped":
+            die(f"la VM '{vm_name}' (VMID={vmid}) n'est pas arrêtée sur ce serveur "
+                f"(destination) — impossible de modifier ses disques/réseau.")
         log(f"VM '{vm_name}' existe déjà (VMID={vmid}) — complète ce qui manque.")
         existing_slots = {slot for slot, _, _ in get_disks(None, vmid)}
     else:
