@@ -8,6 +8,7 @@ import re
 from dataclasses import dataclass
 from typing import List, Optional
 
+from logutil import log
 from run import run, ssh
 
 
@@ -121,8 +122,7 @@ def init_vg(vg: str, partition: str, vg_backup: Optional[str] = None) -> bool:
             r = run(["vgcfgrestore", "-f", backup_file, vg], capture=True, check=False)
             if r.returncode == 0:
                 return True
-            print(f"  Attention : vgcfgrestore échoué, recréation sans préservation UUID:\n{r.stderr}",
-                  file=__import__("sys").stderr)
+            log(f"  Attention : vgcfgrestore échoué, recréation sans préservation UUID:\n{r.stderr}")
         finally:
             _os.unlink(backup_file)
 

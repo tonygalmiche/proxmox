@@ -2,22 +2,32 @@
 import subprocess
 from typing import Optional
 
+from logutil import log
+
 
 def run(cmd: list, *, check: bool = True, capture: bool = False,
         stdin: Optional[str] = None) -> subprocess.CompletedProcess:
+    """Capture toujours stdout/stderr (jamais laissé filer sur la console) :
+    en cas de succès, le détail va dans le fichier de log ; en cas d'échec
+    avec check=True, il est repris dans l'exception levée."""
     result = subprocess.run(
         [str(c) for c in cmd],
         check=False,
-        capture_output=capture,
+        capture_output=True,
         text=True,
         input=stdin,
     )
+    stdout = (result.stdout or "").strip()
+    stderr = (result.stderr or "").strip()
     if check and result.returncode != 0:
-        stderr = (result.stderr or "").strip()
         raise RuntimeError(
             f"Échec (code {result.returncode}): {' '.join(str(c) for c in cmd)}"
             + (f"\n{stderr}" if stderr else "")
         )
+    if stdout:
+        log(stdout)
+    if stderr:
+        log(stderr)
     return result
 
 

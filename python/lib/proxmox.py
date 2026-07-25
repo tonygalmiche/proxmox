@@ -9,6 +9,7 @@ import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
+from logutil import log
 from run import run
 
 
@@ -129,11 +130,11 @@ def set_uefi(vmid: str, storage: str) -> None:
     cfg = run(["qm", "config", vmid], capture=True).stdout
     if "bios: ovmf" not in cfg:
         run(["qm", "set", vmid, "--bios", "ovmf"])
-        print("  UEFI : --bios ovmf appliqué")
+        log("  UEFI : --bios ovmf appliqué")
     if "efidisk0:" not in cfg:
         run(["qm", "set", vmid, "--efidisk0",
              f"{storage}:0,efitype=4m,pre-enrolled-keys=0"])
-        print("  UEFI : efidisk0 créé")
+        log("  UEFI : efidisk0 créé")
 
 
 def set_serial(vmid: str) -> None:

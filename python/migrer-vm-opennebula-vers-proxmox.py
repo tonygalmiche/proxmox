@@ -16,6 +16,7 @@ import math
 import os
 import re
 import sys
+import time
 
 # Ajoute lib/ au path Python
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "lib"))
@@ -30,6 +31,7 @@ import opennebula as on_mod
 import partition as part
 import proxmox as pve
 import sync as sync_mod
+from logutil import log
 
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.ini")
 REQUIRED_TOOLS = [
@@ -98,6 +100,9 @@ def _find_shared_volume(disk) -> str | None:
 
 
 def create_vm(vm_name: str, cfg) -> None:
+    start = time.time()
+    print(f"{time.strftime('%H:%M:%S')} --create {vm_name} : début")
+
     on_vm = on_mod.find_vm_or_template(cfg.opennebula_host, vm_name)
 
     existing = pve.find_vm(vm_name)
@@ -111,8 +116,8 @@ def create_vm(vm_name: str, cfg) -> None:
     vmid = pve.next_vmid()
     pve.create_vm(vmid, vm_name, on_vm.memory_mb, on_vm.vcpu, cfg.proxmox_bridge)
 
-    print(f"{'VM':<30} {'ON_ID':<8} {'VCPU':<6} {'RAM(Mo)':<10} "
-          f"{'VMID':<8} {'DISK':<6} {'IMAGE':<30} {'ON(Mo)':<10} {'PVE'}")
+    log(f"{'VM':<30} {'ON_ID':<8} {'VCPU':<6} {'RAM(Mo)':<10} "
+        f"{'VMID':<8} {'DISK':<6} {'IMAGE':<30} {'ON(Mo)':<10} {'PVE'}")
     for disk in on_vm.disks:
         reused_volume = _find_shared_volume(disk)
         if reused_volume:
@@ -122,12 +127,15 @@ def create_vm(vm_name: str, cfg) -> None:
             size_gb = mb_to_gb_ceil(disk.size_mb)
             pve.add_disk(vmid, disk.disk_id, cfg.proxmox_storage, size_gb)
             pve_col = f"{size_gb}G (nouveau)"
-        print(f"{vm_name:<30} {on_vm.vm_id:<8} {on_vm.vcpu:<6} {on_vm.memory_mb:<10} "
-              f"{vmid:<8} {disk.disk_id:<6} {disk.image:<30} {disk.size_mb:<10} {pve_col}")
+        log(f"{vm_name:<30} {on_vm.vm_id:<8} {on_vm.vcpu:<6} {on_vm.memory_mb:<10} "
+            f"{vmid:<8} {disk.disk_id:<6} {disk.image:<30} {disk.size_mb:<10} {pve_col}")
 
     pve.set_boot_disk(vmid)
     pve.set_serial(vmid)
-    print(f"VM '{vm_name}' créée sur Proxmox (VMID={vmid}).")
+    log(f"VM '{vm_name}' créée sur Proxmox (VMID={vmid}).")
+
+    elapsed = int(time.time() - start)
+    print(f"{time.strftime('%H:%M:%S')} --create {vm_name} : fin (VMID={vmid}, durée {elapsed}s)")
 
 
 # ---------------------------------------------------------------------------
@@ -205,14 +213,13 @@ def sync_vm(vm_name: str, cfg, init_sel, rsync_sel) -> None:
         die("--init/--rsync doit préciser au moins un disque (ou 'all').")
 
     usage_pct = pve.get_storage_usage_pct(cfg.proxmox_storage)
-    print(f"  Occupation du storage '{cfg.proxmox_storage}' : {usage_pct:.1f}% "
-          f"(seuil d'alerte : {cfg.thin_pool_alert_pct:.0f}%)")
+    log(f"  Occupation du storage '{cfg.proxmox_storage}' : {usage_pct:.1f}% "
+        f"(seuil d'alerte : {cfg.thin_pool_alert_pct:.0f}%)")
     if usage_pct >= cfg.thin_pool_alert_pct:
         die(f"storage '{cfg.proxmox_storage}' à {usage_pct:.1f}%, "
             f"seuil d'alerte {cfg.thin_pool_alert_pct:.0f}% dépassé — "
             f"synchronisation bloquée pour éviter de saturer le pool.")
 
-    import time
     start = time.time()
     print(f"VM '{vm_name}' : OpenNebula ID={on_vm.vm_id} ↔ Proxmox VMID={pve_vm.vmid} "
           f"({len(touched_ids)}/{len(on_vm.disks)} disque(s) traité(s), "
@@ -263,7 +270,7 @@ def _migrate_disk(disk_id: int, on_source: str, pve_volume: str,
 
     # 2. Table de partitions côté Proxmox (--init uniquement)
     if init and sfdisk_dump.strip():
-        print(f"  Copie de la table de partitions → {pve_dev}")
+        log(f"  Copie de la table de partitions → {pve_dev}")
         part.apply_table(pve_dev, sfdisk_dump)
 
     dst_parts = part.kpartx_add(pve_dev)
@@ -369,8 +376,7 @@ def _handle_lvm(disk_id: int, part_idx: int, src_part: str, dst_part: str,
 
     vg = lvm.get_remote_vg(host, src_part)
     if not vg:
-        print(f"  Attention : LVM2_member sur {src_part} sans VG connu, ignoré.",
-              file=sys.stderr)
+        log(f"  Attention : LVM2_member sur {src_part} sans VG connu, ignoré.")
         return None
 
     lvm.remote_activate(host, src_part, vg)
@@ -455,8 +461,7 @@ def _post_sync(disk_id: int, pve_dev: str, proxmox_vmid: str, cfg,
         cleanup.grub_mnt = grub_mnt
 
         if not os.path.exists(os.path.join(grub_mnt, "etc/fstab")):
-            print(f"  Attention : {grub_root_dev} ne contient pas /etc/fstab, GRUB ignoré.",
-                  file=sys.stderr)
+            log(f"  Attention : {grub_root_dev} ne contient pas /etc/fstab, GRUB ignoré.")
         else:
             grub_mod.apply_root_fixes(grub_mnt, cfg.proxmox_net_iface)
             grub_mod.install_bios(grub_mnt, cfg.grub_nbd_device, root_fsuuid)
@@ -467,8 +472,7 @@ def _post_sync(disk_id: int, pve_dev: str, proxmox_vmid: str, cfg,
 
     else:
         # VM BIOS + LVM : GRUB non automatisé
-        print("  Attention : GRUB sur BIOS+LVM non géré. Réinstallez manuellement.",
-              file=sys.stderr)
+        log("  Attention : GRUB sur BIOS+LVM non géré. Réinstallez manuellement.")
         pve.set_serial(proxmox_vmid)
 
 
@@ -491,6 +495,9 @@ def _check_partition_consistency(host: str, nbd_device: str,
 # ---------------------------------------------------------------------------
 
 def reinstall_grub(vm_name: str, cfg) -> None:
+    start = time.time()
+    print(f"{time.strftime('%H:%M:%S')} --reinstall-grub {vm_name} : début")
+
     pve_vm = pve.find_vm(vm_name)
     if not pve_vm:
         die(f"VM Proxmox '{vm_name}' introuvable.")
@@ -502,6 +509,10 @@ def reinstall_grub(vm_name: str, cfg) -> None:
 
     grub_mod.reinstall_bios_boot(pve_vm.vmid, pve_dev,
                                  cfg.grub_nbd_device, cfg.dst_mount_base)
+
+    elapsed = int(time.time() - start)
+    print(f"{time.strftime('%H:%M:%S')} --reinstall-grub {vm_name} : fin "
+          f"(VMID={pve_vm.vmid}, durée {elapsed}s)")
 
 
 def _parse_disk_selector_arg(values):
