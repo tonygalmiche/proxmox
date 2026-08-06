@@ -146,3 +146,19 @@ def activate(vg: str) -> None:
 
 def deactivate(vg: str) -> None:
     run(["vgchange", "-an", vg], check=False)
+
+
+def lv_is_active(path: str) -> bool:
+    """True si le device-mapper du LV existe déjà (LV actif)."""
+    import os
+    return os.path.exists(path)
+
+
+def activate_lv(path: str) -> None:
+    """Active un seul LV (pas tout le VG, pour ne pas toucher aux disques
+    des autres VM qui partagent le même VG)."""
+    run(["lvchange", "-ay", path], check=False)
+
+
+def deactivate_lv(path: str) -> None:
+    run(["lvchange", "-an", path], check=False)

@@ -8,6 +8,7 @@ import re
 import time
 from typing import List, Optional, Tuple
 
+import lvm
 import nbd as nbd_mod
 import opennebula as on_mod
 import proxmox as pve
@@ -44,6 +45,8 @@ def kpartx_add(device: str) -> List[str]:
     """
     run(["kpartx", "-avs", device], check=False)
     r = run(["kpartx", "-l", device], capture=True, check=False)
+    if r.returncode != 0:
+        raise RuntimeError(f"kpartx -l échoué sur {device}:\n{r.stdout}{r.stderr}")
     lines = [l for l in r.stdout.splitlines() if l.strip()]
     if not lines:
         return [device]
@@ -210,6 +213,12 @@ def diagnose_disk(host: str, source: str, nbd_device: str, pve_dev: str,
     n'applique aucune table ni mkfs), et retourne
     (has_table_src, has_table_dst, ok, détail)."""
     sfdisk_dump, src_parts = nbd_mod.remote_connect(host, source, nbd_device, mount_base)
+    # Un LV de VM arrêtée n'est pas actif après un reboot de Proxmox : sans
+    # ça, kpartx échoue silencieusement (cf. commentaire dans _migrate_disk)
+    # et fait croire à tort à une table de partitions incohérente.
+    was_active = lvm.lv_is_active(pve_dev)
+    if not was_active:
+        lvm.activate_lv(pve_dev)
     try:
         dst_parts = kpartx_add(pve_dev)
         bios_boot_nums = bios_boot_partition_numbers(pve_dev)
@@ -220,6 +229,8 @@ def diagnose_disk(host: str, source: str, nbd_device: str, pve_dev: str,
         return check_consistency(host, nbd_device, sfdisk_dump, src_parts, pve_dev, dst_parts)
     finally:
         kpartx_remove(pve_dev)
+        if not was_active:
+            lvm.deactivate_lv(pve_dev)
         nbd_mod.remote_disconnect(host, nbd_device, mount_base)
 
 

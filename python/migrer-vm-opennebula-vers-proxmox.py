@@ -268,6 +268,15 @@ def _migrate_disk(disk_id: int, on_source: str, pve_volume: str,
     cleanup.pve_dev = pve_dev
     cleanup.nbd_device = nbd_device
 
+    # Après un reboot de Proxmox, le LV d'une VM arrêtée n'est pas actif :
+    # kpartx échouerait silencieusement dessus (cf. "failed to stat()"),
+    # faisant croire à tort à une table de partitions incohérente. On ne
+    # l'active que s'il ne l'était pas déjà, et on le redésactive à
+    # l'identique en fin de traitement (cleanup.pve_dev_activated).
+    if not lvm.lv_is_active(pve_dev):
+        lvm.activate_lv(pve_dev)
+        cleanup.pve_dev_activated = pve_dev
+
     # 1. Connexion NBD source
     sfdisk_dump, src_parts = nbd_mod.remote_connect(
         cfg.opennebula_host, on_source, nbd_device, cfg.src_mount_base
@@ -369,6 +378,10 @@ def _migrate_disk(disk_id: int, on_source: str, pve_volume: str,
     # 6. Post-traitement : UEFI ou GRUB BIOS
     _post_sync(disk_id, pve_dev, proxmox_vmid, cfg, cleanup,
                root_dst_mount, root_part_num, root_fsuuid, grub_has_esp)
+
+    if cleanup.pve_dev_activated:
+        lvm.deactivate_lv(cleanup.pve_dev_activated)
+        cleanup.pve_dev_activated = None
 
     nbd_mod.remote_disconnect(cfg.opennebula_host, nbd_device, cfg.src_mount_base)
 

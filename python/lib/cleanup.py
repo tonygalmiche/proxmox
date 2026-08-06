@@ -31,6 +31,7 @@ class Cleanup:
 
         self.dst_mounts: List[str] = []
         self.pve_dev: Optional[str] = None
+        self.pve_dev_activated: Optional[str] = None
         self.lvm_vg: Optional[str] = None
         self.grub_mnt: Optional[str] = None
 
@@ -67,6 +68,10 @@ class Cleanup:
         if self.pve_dev:
             run(["kpartx", "-d", self.pve_dev], check=False)
             self.pve_dev = None
+
+        if self.pve_dev_activated:
+            run(["lvchange", "-an", self.pve_dev_activated], check=False)
+            self.pve_dev_activated = None
 
         run(["qemu-nbd", "--disconnect", self.grub_nbd], check=False)
 

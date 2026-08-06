@@ -124,3 +124,14 @@ python/
     grub.py         ← installation GRUB + corrections post-migration
     cleanup.py      ← nettoyage garanti (atexit + signaux)
 ```
+
+## Évolutions du script
+
+- **LV Proxmox inactif après un reboot** : après un reboot de Proxmox, le LV
+  d'un disque dont la VM est arrêtée n'est plus actif (il ne l'est que via
+  `qm start`). Sans activation, `kpartx` échouait silencieusement dessus, ce
+  qui pouvait faire croire à tort à une table de partitions incohérente
+  (`--state-disk` annonçait par ex. "destination=1" alors que le disque avait
+  bien 3 partitions). Le script active désormais lui-même le LV concerné si
+  besoin (`lvchange -ay`, un seul LV, pas tout le VG) et le redésactive à
+  l'identique en fin de traitement — sans rapport avec démarrer la VM.
